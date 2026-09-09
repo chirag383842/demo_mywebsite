@@ -44,14 +44,49 @@ export default function Lightbox({ images, index, onClose, onNavigate }: Props) 
         <ChevronLeft size={24} />
       </button>
 
-      <figure className="max-w-5xl max-h-[85vh] flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
-        <img src={img.src} alt={img.alt} decoding="async" className="max-h-[78vh] max-w-full object-contain rounded-xl shadow-2xl animate-scale-in" />
+      <figure className="max-w-5xl max-h-[85vh] w-full flex flex-col items-center justify-center" onClick={(e) => e.stopPropagation()}>
+        {img.media_type === 'video' ||
+        img.src.toLowerCase().endsWith('.mp4') ||
+        img.src.toLowerCase().endsWith('.webm') ||
+        img.src.startsWith('data:video/') ? (
+          <video
+            src={img.src}
+            controls
+            autoPlay
+            playsInline
+            className="max-h-[75vh] max-w-full rounded-2xl shadow-2xl bg-black animate-scale-in"
+          />
+        ) : img.media_type === 'audio' ||
+          img.src.toLowerCase().endsWith('.mp3') ||
+          img.src.toLowerCase().endsWith('.wav') ||
+          img.src.toLowerCase().endsWith('.ogg') ||
+          img.src.startsWith('data:audio/') ? (
+          <div className="card p-8 bg-charcoal-900 border border-spice-500/30 text-white flex flex-col items-center gap-5 w-full max-w-md shadow-2xl rounded-2xl">
+            <span className="h-16 w-16 rounded-full bg-spice-600/30 text-spice-400 grid place-items-center text-3xl">
+              🎵
+            </span>
+            <div className="text-center">
+              <h4 className="font-display text-lg font-bold">{img.caption || img.alt}</h4>
+              <p className="text-xs text-spice-200/70 mt-1">Paras Kachoriwala Audio Clip</p>
+            </div>
+            <audio src={img.src} controls autoPlay className="w-full" />
+          </div>
+        ) : (
+          <img
+            src={img.src}
+            alt={img.alt}
+            decoding="async"
+            className="max-h-[78vh] max-w-full object-contain rounded-xl shadow-2xl animate-scale-in"
+          />
+        )}
         {img.caption && (
           <figcaption className="mt-4 text-center text-spice-50/90 text-sm font-semibold tracking-wide">
             {img.caption}
           </figcaption>
         )}
-        <p className="mt-1 text-xs text-spice-100/50">{index + 1} of {images.length}</p>
+        <p className="mt-1 text-xs text-spice-100/50">
+          {index + 1} of {images.length}
+        </p>
       </figure>
 
       <button

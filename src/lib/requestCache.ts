@@ -34,10 +34,14 @@ export function setCached<T>(key: string, value: T, ttlMs: number = DEFAULT_TTL_
 export function invalidateCache(keyPrefix?: string): void {
   if (!keyPrefix) {
     memoryCache.clear();
+    inFlight.clear();
     return;
   }
   for (const k of Array.from(memoryCache.keys())) {
     if (k.startsWith(keyPrefix)) memoryCache.delete(k);
+  }
+  for (const k of Array.from(inFlight.keys())) {
+    if (k.startsWith(keyPrefix)) inFlight.delete(k);
   }
 }
 

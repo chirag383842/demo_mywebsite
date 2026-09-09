@@ -94,8 +94,9 @@ export default function Menu() {
 }
 
 function MenuCard({ product: p, index }: { product: Product; index: number }) {
-  const isJain = p.slug.includes('jain');
-  const isSwaminarayan = p.slug.includes('swaminarayan');
+  const isJain = p.slug.includes('jain') || p.name.toLowerCase().includes('jain');
+  const isSwaminarayan = p.slug.includes('swaminarayan') || p.name.toLowerCase().includes('swaminarayan');
+  const isSpecial = p.slug.includes('special') || p.name.toLowerCase().includes('special');
   return (
     <article
       className="card group overflow-hidden flex flex-col justify-between animate-fade-up hover:shadow-warm transition-all duration-300"
@@ -160,6 +161,11 @@ function MenuCard({ product: p, index }: { product: Product; index: number }) {
                 {isSwaminarayan && (
                   <span className="text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-0.5 rounded-full">
                     ✨ Satvik
+                  </span>
+                )}
+                {isSpecial && !p.featured && (
+                  <span className="text-[11px] font-bold bg-spice-100 text-spice-800 border border-spice-300 px-2.5 py-0.5 rounded-full">
+                    ⭐ Special
                   </span>
                 )}
               </div>

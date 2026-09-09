@@ -96,3 +96,17 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE gallery;
   END IF;
 END $$;
+
+-- 8. Seed all 4 menu varieties into products table
+INSERT INTO products (slug, name, price, description, image_url, available, stock, featured, display_order)
+VALUES
+  ('kachori', 'Regular Kachori', 40, 'Crispy, golden-fried puffed pastry stuffed with our classic spiced lentil and onion filling — served fresh with tangy house chutneys.', '/images/kachori.webp', true, 80, true, 1),
+  ('kachori-jain', 'Jain Kachori (No Onion / No Garlic)', 40, 'Prepared strictly per Jain dietary traditions without onion or garlic — packed with rich authentic spices and served with fresh sweet and spicy chutneys.', '', true, 50, false, 2),
+  ('kachori-swaminarayan', 'Swaminarayan Kachori (Satvik)', 40, 'Pure satvik preparation crafted strictly without onion or garlic, following Swaminarayan dietary guidelines with fragrant spices and fresh chutneys.', '', true, 50, false, 3),
+  ('bhel', 'Fresh Bhel', 40, 'Light, crunchy puffed rice tossed with fresh tomatoes, onions, sev and our house chutneys — a burst of flavour in every bite.', '/images/bhel.webp', true, 60, false, 4)
+ON CONFLICT (slug) DO UPDATE SET
+  name = EXCLUDED.name,
+  description = EXCLUDED.description,
+  image_url = CASE WHEN products.image_url IS NULL OR products.image_url = '' THEN EXCLUDED.image_url ELSE products.image_url END;
+
+

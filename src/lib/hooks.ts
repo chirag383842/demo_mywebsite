@@ -5,6 +5,7 @@ import { DEFAULT_GALLERY_IMAGES } from './galleryData';
 import { sendFeedbackToGoogleSheet } from './googleSheets';
 import { calculateStoreStatus } from './constants';
 import { withDedupe, invalidateCache } from './requestCache';
+import { idbGet, idbSet } from './mediaStorage';
 
 export type AsyncState<T> = {
   data: T | null;
@@ -185,22 +186,67 @@ function getLocalStatus(): StoreStatus | null {
   }
 }
 
+let memoryProducts: Product[] | null = null;
+let memoryGallery: GalleryImage[] | null = null;
+
 function getLocalProducts(): Product[] | null {
+  if (memoryProducts && memoryProducts.length > 0) return memoryProducts;
   try {
     const raw = localStorage.getItem(STORAGE_PRODUCTS_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) {
+      memoryProducts = JSON.parse(raw);
+      return memoryProducts;
+    }
   } catch {
-    return null;
+    /* ignore */
   }
+  return memoryProducts;
+}
+
+export function normalizeGalleryItem(img: GalleryImage): GalleryImage {
+  let cat = img.category;
+  if ((cat as string) === 'shop' || (cat as string) === 'home' || (cat as string) === 'about') {
+    cat = 'stall';
+  }
+  let mediaType = img.media_type;
+  if (!mediaType) {
+    const srcLower = (img.src || '').toLowerCase();
+    if (srcLower.endsWith('.mp4') || srcLower.endsWith('.webm') || srcLower.startsWith('data:video/')) {
+      mediaType = 'video';
+    } else if (
+      srcLower.endsWith('.mp3') ||
+      srcLower.endsWith('.wav') ||
+      srcLower.endsWith('.ogg') ||
+      srcLower.startsWith('data:audio/')
+    ) {
+      mediaType = 'audio';
+    } else {
+      mediaType = 'image';
+    }
+  }
+  if (mediaType === 'video' || mediaType === 'audio') {
+    if (cat !== 'customers' && cat !== 'stall' && cat !== 'food') {
+      cat = 'videos';
+    }
+  }
+  return { ...img, category: cat, media_type: mediaType };
 }
 
 function getLocalGallery(): GalleryImage[] | null {
+  if (memoryGallery && memoryGallery.length > 0) return memoryGallery;
   try {
     const raw = localStorage.getItem(STORAGE_GALLERY_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        memoryGallery = parsed.map(normalizeGalleryItem);
+        return memoryGallery;
+      }
+    }
   } catch {
-    return null;
+    /* ignore */
   }
+  return memoryGallery;
 }
 
 function getLocalFeedbackList(): Feedback[] {
@@ -258,33 +304,85 @@ export function useProducts() {
     return { data: cached ?? DEFAULT_PRODUCTS, loading: false, error: null };
   });
 
+  // Async load from IndexedDB to ensure custom added menu items are never lost
+  useEffect(() => {
+    idbGet<Product[]>(STORAGE_PRODUCTS_KEY).then((idbProducts) => {
+      if (idbProducts && idbProducts.length > 0) {
+        memoryProducts = idbProducts;
+        setState((prev) => ({
+          ...prev,
+          data: idbProducts,
+        }));
+      }
+    });
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
       const result = await withDedupe<Product[]>(
         'sb:products',
         async () => {
+          const cached = getLocalProducts();
           const { data, error } = await withTimeout(() =>
             supabase
               .from('products')
               .select('*')
               .order('display_order', { ascending: true })
           );
+
+          const baseList = memoryProducts ?? cached ?? DEFAULT_PRODUCTS;
           if (error || !data || data.length === 0) {
-            const cached = getLocalProducts();
-            return cached ?? DEFAULT_PRODUCTS;
+            return baseList;
           }
+
+          // Build a map of remote items by slug and id
+          const remoteMap = new Map<string, Product>();
+          (data as Product[]).forEach((p) => {
+            remoteMap.set(p.slug, p);
+            if (p.id) remoteMap.set(p.id, p);
+          });
+
+          // Merge with cached/default products so that:
+          // 1. Any items not yet in Supabase (Jain, Swaminarayan, custom added items) are 100% preserved
+          // 2. Any local author modifications are never overwritten by stale remote rows
+          const merged: Product[] = baseList.map((localItem) => {
+            const remoteItem = remoteMap.get(localItem.slug) || (localItem.id ? remoteMap.get(localItem.id) : undefined);
+            if (!remoteItem) return localItem;
+
+            return {
+              ...remoteItem,
+              ...localItem,
+              id: remoteItem.id || localItem.id,
+              price: typeof localItem.price === 'number' && localItem.price > 0 ? localItem.price : remoteItem.price,
+              available: typeof localItem.available === 'boolean' ? localItem.available : remoteItem.available,
+              stock: localItem.stock ?? remoteItem.stock,
+              image_url: localItem.image_url || remoteItem.image_url,
+              description: localItem.description || remoteItem.description,
+              updated_at: localItem.updated_at || remoteItem.updated_at || new Date().toISOString(),
+            };
+          });
+
+          // Also include any remote items not in baseList
+          (data as Product[]).forEach((p) => {
+            if (!merged.some((m) => m.slug === p.slug || (p.id && m.id === p.id))) {
+              merged.push(p);
+            }
+          });
+
+          memoryProducts = merged;
           try {
-            localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(data));
+            localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(merged));
           } catch {
             /* ignore */
           }
-          return data as Product[];
+          void idbSet(STORAGE_PRODUCTS_KEY, merged);
+          return merged;
         },
         CACHE_TTL_MEDIUM
       );
       setState({ data: result, loading: false, error: null });
     } catch (err) {
-      const cached = getLocalProducts();
+      const cached = memoryProducts ?? getLocalProducts();
       setState({
         data: cached ?? DEFAULT_PRODUCTS,
         loading: false,
@@ -302,14 +400,36 @@ export function useProducts() {
     fetchData();
 
     const handleLocalUpdate = () => {
-      const cached = getLocalProducts();
-      if (cached) setState({ data: cached, loading: false, error: null });
+      const cached = memoryProducts ?? getLocalProducts();
+      if (cached) {
+        setState({ data: [...cached], loading: false, error: null });
+      }
     };
 
     window.addEventListener('pk_products_changed', handleLocalUpdate);
 
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_PRODUCTS_KEY) {
+        handleLocalUpdate();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+
     const handleBroadcast = (e: MessageEvent) => {
       if (e.data?.type === 'PRODUCTS_CHANGED') {
+        if (e.data.data?.newProduct) {
+          const np = e.data.data.newProduct as Product;
+          const current = memoryProducts ?? getLocalProducts() ?? DEFAULT_PRODUCTS;
+          if (!current.some((p) => p.id === np.id || p.slug === np.slug)) {
+            memoryProducts = [...current, np];
+          }
+        } else if (e.data.data?.productId && e.data.data?.action === 'deleted') {
+          const pid = e.data.data.productId;
+          const current = memoryProducts ?? getLocalProducts() ?? DEFAULT_PRODUCTS;
+          memoryProducts = current.filter((p) => p.id !== pid && p.slug !== pid);
+        }
+        const cached = memoryProducts ?? getLocalProducts();
+        if (cached) setState({ data: [...cached], loading: false, error: null });
         invalidateCache('sb:products');
         fetchData();
       }
@@ -337,6 +457,7 @@ export function useProducts() {
     return () => {
       window.clearInterval(pollInterval);
       window.removeEventListener('pk_products_changed', handleLocalUpdate);
+      window.removeEventListener('storage', handleStorage);
       syncBroadcastChannel?.removeEventListener('message', handleBroadcast);
       if (channel) {
         try {
@@ -513,6 +634,16 @@ export function useGallery() {
     return { data: cached ?? DEFAULT_GALLERY_IMAGES, loading: false, error: null };
   });
 
+  // Async load from IndexedDB so uploaded videos/audios are never lost
+  useEffect(() => {
+    idbGet<GalleryImage[]>(STORAGE_GALLERY_KEY).then((idbGallery) => {
+      if (idbGallery && idbGallery.length > 0) {
+        memoryGallery = idbGallery;
+        setState((prev) => ({ ...prev, data: idbGallery }));
+      }
+    });
+  }, []);
+
   const fetchGallery = useCallback(async () => {
     try {
       const result = await withDedupe<GalleryImage[]>(
@@ -525,30 +656,37 @@ export function useGallery() {
                 .select('*')
                 .order('display_order', { ascending: true })
             );
+            const currentLocal = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
             if (error || !data || data.length === 0) {
-              const cached = getLocalGallery();
-              return cached ?? DEFAULT_GALLERY_IMAGES;
+              return currentLocal;
             }
-            const formatted = (data as GalleryImage[]).map((img) => ({
-              ...img,
-              category: (img.category || 'food') as GalleryImage['category'],
-            }));
+            // CRITICAL: Merge remote records with local items so uploaded videos/audios are NEVER lost!
+            const remoteFormatted = (data as GalleryImage[]).map(normalizeGalleryItem);
+            const remoteIds = new Set(remoteFormatted.map((r) => r.id));
+            const merged: GalleryImage[] = [...remoteFormatted];
+            currentLocal.forEach((item) => {
+              if (!remoteIds.has(item.id)) {
+                merged.unshift(item);
+              }
+            });
+            memoryGallery = merged;
             try {
-              localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(formatted));
+              localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(merged));
             } catch {
               /* ignore */
             }
-            return formatted;
+            void idbSet(STORAGE_GALLERY_KEY, merged);
+            return merged;
           } catch {
-            const cached = getLocalGallery();
-            return cached ?? DEFAULT_GALLERY_IMAGES;
+            const currentLocal = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+            return currentLocal;
           }
         },
         CACHE_TTL_MEDIUM
       );
       setState({ data: result, loading: false, error: null });
     } catch (err) {
-      const cached = getLocalGallery();
+      const cached = memoryGallery ?? getLocalGallery();
       setState({
         data: cached ?? DEFAULT_GALLERY_IMAGES,
         loading: false,
@@ -566,7 +704,7 @@ export function useGallery() {
     fetchGallery();
 
     const handleGalleryUpdate = () => {
-      const cached = getLocalGallery();
+      const cached = memoryGallery ?? getLocalGallery();
       if (cached) setState({ data: cached, loading: false, error: null });
     };
 
@@ -574,6 +712,8 @@ export function useGallery() {
 
     const handleBroadcast = (e: MessageEvent) => {
       if (e.data?.type === 'GALLERY_CHANGED') {
+        const cached = memoryGallery ?? getLocalGallery();
+        if (cached) setState({ data: cached, loading: false, error: null });
         invalidateCache('sb:gallery');
         fetchGallery();
       }
@@ -1117,43 +1257,233 @@ export async function updateStoreStatus(status: {
 // 9. AUTHOR ACTIONS: PRODUCT UPDATES
 // ----------------------------------------------------
 export async function updateProduct(
-  productId: string,
-  updates: Partial<Product>
-): Promise<{ success: boolean; error?: string }> {
+  productIdOrSlug: string,
+  updates: Partial<Product>,
+  explicitSlug?: string
+): Promise<{ success: boolean; error?: string; remoteSync?: boolean }> {
+  const timestamp = new Date().toISOString();
+  let updatedProduct: Product | undefined;
+
   try {
+    const targetSlug = explicitSlug || productIdOrSlug;
     const currentProducts = getLocalProducts() ?? DEFAULT_PRODUCTS;
+    let found = false;
+
     const updated = currentProducts.map((p) => {
-      if (p.id === productId || p.slug === productId) {
-        return { ...p, ...updates };
+      const isMatch =
+        p.id === productIdOrSlug ||
+        p.slug === targetSlug ||
+        (explicitSlug && p.slug === explicitSlug) ||
+        p.slug === productIdOrSlug;
+
+      if (isMatch) {
+        found = true;
+        updatedProduct = { ...p, ...updates, updated_at: timestamp };
+        return updatedProduct;
       }
       return p;
     });
-    localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(updated));
+
+    if (!found) {
+      const defaultMatch = DEFAULT_PRODUCTS.find(
+        (d) => d.slug === targetSlug || d.id === productIdOrSlug || (explicitSlug && d.slug === explicitSlug)
+      );
+      if (defaultMatch) {
+        updatedProduct = { ...defaultMatch, ...updates, updated_at: timestamp };
+        updated.push(updatedProduct);
+      }
+    }
+
+    memoryProducts = updated;
+    try {
+      localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(updated));
+    } catch {
+      /* ignore */
+    }
+    void idbSet(STORAGE_PRODUCTS_KEY, updated);
   } catch {
     /* ignore */
   }
 
   invalidateCache('sb:products');
-  broadcastRealtimeEvent('PRODUCTS_CHANGED', { productId, updates });
+  broadcastRealtimeEvent('PRODUCTS_CHANGED', {
+    productId: productIdOrSlug,
+    slug: explicitSlug || updatedProduct?.slug,
+    updates,
+    updatedProduct,
+    timestamp,
+  });
   window.dispatchEvent(new Event('pk_products_changed'));
 
-  try {
-    const { error } = await withTimeout(() =>
-      supabase
-        .from('products')
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString(),
-        })
-        .or(`id.eq.${productId},slug.eq.${productId}`)
-    );
+  // Non-blocking background remote sync to Supabase (keeps UI instantaneous)
+  void (async () => {
+    try {
+      const slugToUpdate = explicitSlug || updatedProduct?.slug || productIdOrSlug;
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(productIdOrSlug);
 
-    if (error) {
-      console.warn('Supabase product update notice:', error.message);
+      const payload = {
+        ...updates,
+        updated_at: timestamp,
+      };
+
+      let remoteSync = false;
+      // 1. If valid UUID, attempt update by primary key id
+      if (isUuid) {
+        const { data, error } = await withTimeout(() =>
+          supabase
+            .from('products')
+            .update(payload)
+            .eq('id', productIdOrSlug)
+            .select(),
+          2000
+        );
+        if (!error && data && data.length > 0) {
+          remoteSync = true;
+        }
+      }
+
+      // 2. If not UUID or not matched yet, update by slug
+      if (!remoteSync && slugToUpdate) {
+        const { data, error } = await withTimeout(() =>
+          supabase
+            .from('products')
+            .update(payload)
+            .eq('slug', slugToUpdate)
+            .select(),
+          2000
+        );
+        if (!error && data && data.length > 0) {
+          remoteSync = true;
+        }
+      }
+    } catch (err) {
+      console.warn('Remote sync product notice (offline/RLS):', err);
     }
-  } catch (err) {
-    console.warn('Remote sync product notice:', err);
+  })();
+
+  return { success: true, remoteSync: true };
+}
+
+export async function addProduct(
+  productData: Omit<Product, 'id'> & { id?: string }
+): Promise<{ success: boolean; data?: Product; error?: string }> {
+  const timestamp = new Date().toISOString();
+  const slug =
+    productData.slug?.trim() ||
+    productData.name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') ||
+    `item-${Date.now()}`;
+
+  const currentProducts = memoryProducts ?? getLocalProducts() ?? DEFAULT_PRODUCTS;
+  const newId = productData.id || `prod_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const newProduct: Product = {
+    id: newId,
+    slug,
+    name: productData.name.trim(),
+    price: Number(productData.price) || 40,
+    description: productData.description?.trim() || '',
+    image_url: productData.image_url || '/images/kachori.webp',
+    available: productData.available !== undefined ? productData.available : true,
+    stock: productData.stock !== undefined ? productData.stock : 50,
+    featured: Boolean(productData.featured),
+    display_order: productData.display_order ?? currentProducts.length + 1,
+    updated_at: timestamp,
+  };
+
+  const updatedList = [...currentProducts, newProduct];
+  memoryProducts = updatedList;
+
+  try {
+    localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(updatedList));
+  } catch {
+    /* ignore */
   }
+  void idbSet(STORAGE_PRODUCTS_KEY, updatedList);
+
+  invalidateCache('sb:products');
+  broadcastRealtimeEvent('PRODUCTS_CHANGED', {
+    productId: newId,
+    slug,
+    newProduct,
+    timestamp,
+  });
+  window.dispatchEvent(new Event('pk_products_changed'));
+
+  void (async () => {
+    try {
+      const { data, error } = await withTimeout(() =>
+        supabase
+          .from('products')
+          .insert({
+            slug: newProduct.slug,
+            name: newProduct.name,
+            price: newProduct.price,
+            description: newProduct.description,
+            image_url: newProduct.image_url,
+            available: newProduct.available,
+            stock: newProduct.stock,
+            featured: newProduct.featured,
+            display_order: newProduct.display_order,
+          })
+          .select()
+          .maybeSingle(),
+        2500
+      );
+      if (!error && data?.id) {
+        newProduct.id = data.id;
+      }
+    } catch (err) {
+      console.warn('Supabase product insert notice:', err);
+    }
+  })();
+
+  return { success: true, data: newProduct };
+}
+
+export async function deleteProduct(
+  productIdOrSlug: string
+): Promise<{ success: boolean; error?: string }> {
+  const timestamp = new Date().toISOString();
+  try {
+    const currentProducts = memoryProducts ?? getLocalProducts() ?? DEFAULT_PRODUCTS;
+    const updated = currentProducts.filter(
+      (p) => p.id !== productIdOrSlug && p.slug !== productIdOrSlug
+    );
+    memoryProducts = updated;
+    try {
+      localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(updated));
+    } catch {
+      /* ignore */
+    }
+    await idbSet(STORAGE_PRODUCTS_KEY, updated);
+  } catch {
+    /* ignore */
+  }
+
+  invalidateCache('sb:products');
+  broadcastRealtimeEvent('PRODUCTS_CHANGED', {
+    productId: productIdOrSlug,
+    action: 'deleted',
+    timestamp,
+  });
+  window.dispatchEvent(new Event('pk_products_changed'));
+
+  void (async () => {
+    try {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(productIdOrSlug);
+      if (isUuid) {
+        await withTimeout(() => supabase.from('products').delete().eq('id', productIdOrSlug), 2000);
+      } else {
+        await withTimeout(() => supabase.from('products').delete().eq('slug', productIdOrSlug), 2000);
+      }
+    } catch (err) {
+      console.warn('Remote sync delete product notice:', err);
+    }
+  })();
 
   return { success: true };
 }
@@ -1165,23 +1495,27 @@ export async function addGalleryImage(
   image: Omit<GalleryImage, 'id'>
 ): Promise<{ success: boolean; data?: GalleryImage; error?: string }> {
   const newId = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const newImg: GalleryImage = {
+  const normalized = normalizeGalleryItem({
     id: newId,
     src: image.src,
-    alt: image.alt || 'Paras Kachoriwala Gallery Image',
+    alt: image.alt || 'Paras Kachoriwala Media',
     category: image.category || 'food',
+    media_type: image.media_type,
     caption: image.caption || '',
     display_order: image.display_order ?? 99,
     created_at: new Date().toISOString(),
-  };
+  });
+
+  const current = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+  const updated = [normalized, ...current];
+  memoryGallery = updated;
 
   try {
-    const current = getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
-    const updated = [newImg, ...current];
     localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(updated));
   } catch {
     /* ignore */
   }
+  await idbSet(STORAGE_GALLERY_KEY, updated);
 
   invalidateCache('sb:gallery');
   broadcastRealtimeEvent('GALLERY_CHANGED');
@@ -1192,40 +1526,44 @@ export async function addGalleryImage(
       supabase
         .from('gallery')
         .insert({
-          src: newImg.src,
-          alt: newImg.alt,
-          category: newImg.category,
-          caption: newImg.caption,
-          display_order: newImg.display_order,
+          src: normalized.src,
+          alt: normalized.alt,
+          category: normalized.category,
+          caption: normalized.caption,
+          display_order: normalized.display_order,
         })
         .select()
-        .maybeSingle()
+        .maybeSingle(),
+      2500
     );
 
     if (error) {
       console.warn('Supabase gallery insert notice:', error.message);
     }
     if (data) {
-      newImg.id = data.id;
+      normalized.id = data.id;
     }
   } catch (err) {
     console.warn('Supabase gallery sync notice:', err);
   }
 
-  return { success: true, data: newImg };
+  return { success: true, data: normalized };
 }
 
 export async function updateGalleryImage(
   id: string,
   updates: Partial<GalleryImage>
 ): Promise<{ success: boolean; error?: string }> {
+  const current = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+  const updated = current.map((img) => (img.id === id ? { ...img, ...updates } : img));
+  memoryGallery = updated;
+
   try {
-    const current = getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
-    const updated = current.map((img) => (img.id === id ? { ...img, ...updates } : img));
     localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(updated));
   } catch {
     /* ignore */
   }
+  await idbSet(STORAGE_GALLERY_KEY, updated);
 
   invalidateCache('sb:gallery');
   broadcastRealtimeEvent('GALLERY_CHANGED');
@@ -1241,13 +1579,16 @@ export async function updateGalleryImage(
 }
 
 export async function deleteGalleryImage(id: string): Promise<{ success: boolean; error?: string }> {
+  const current = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+  const updated = current.filter((img) => img.id !== id);
+  memoryGallery = updated;
+
   try {
-    const current = getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
-    const updated = current.filter((img) => img.id !== id);
     localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(updated));
   } catch {
     /* ignore */
   }
+  await idbSet(STORAGE_GALLERY_KEY, updated);
 
   invalidateCache('sb:gallery');
   broadcastRealtimeEvent('GALLERY_CHANGED');

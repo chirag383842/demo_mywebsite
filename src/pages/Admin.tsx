@@ -8,6 +8,8 @@ import {
   Package,
   Save,
   CheckCircle2,
+  XCircle,
+  X,
   AlertCircle,
   Eye,
   EyeOff,
@@ -28,6 +30,13 @@ import {
   Utensils,
   BookOpen,
   Home as HomeIcon,
+  Camera,
+  Video,
+  Play,
+  Film,
+  Music,
+  Sparkles,
+  Leaf,
 } from 'lucide-react';
 import { login, logout, getAuthUser, checkLockout, type AuthUser } from '@/lib/auth';
 import {
@@ -37,6 +46,8 @@ import {
   useGallery,
   updateStoreStatus,
   updateProduct,
+  addProduct,
+  deleteProduct,
   deleteFeedback,
   toggleApproveFeedback,
   addGalleryImage,
@@ -51,8 +62,9 @@ import {
 } from '@/lib/googleSheets';
 import { CROWD_META, type CrowdLevel, formatTime, getISTDate, isWithinScheduleHours } from '@/lib/constants';
 import { GALLERY_CATEGORIES } from '@/lib/galleryData';
+import { optimizeImageForProduct } from '@/lib/imageUtils';
 import type { Page } from '@/components/Navbar';
-import type { GalleryImage, GalleryCategory } from '@/lib/types';
+import type { GalleryImage, GalleryCategory, Product } from '@/lib/types';
 import Logo from '@/components/Logo';
 import StarRating from '@/components/StarRating';
 import { SectionSkeleton, SectionError } from '@/components/SectionLoader';
@@ -88,6 +100,27 @@ export default function Admin({ onNavigate }: Props) {
   >({});
   const [productSaving, setProductSaving] = useState<Record<string, boolean>>({});
   const [productMessages, setProductMessages] = useState<Record<string, string>>({});
+  const [productImageUploading, setProductImageUploading] = useState<Record<string, boolean>>({});
+  const [targetProductForPhoto, setTargetProductForPhoto] = useState<Product | null>(null);
+  const productPhotoInputRef = useRef<HTMLInputElement>(null);
+
+  // Add Menu Item state
+  const [showAddMenuModal, setShowAddMenuModal] = useState(false);
+  const [newMenuItem, setNewMenuItem] = useState({
+    name: '',
+    dietaryType: 'regular' as 'regular' | 'jain' | 'swaminarayan' | 'special',
+    price: 40,
+    stock: 50,
+    available: true,
+    featured: false,
+    description: '',
+    image_url: '',
+  });
+  const [newMenuPhotoUploading, setNewMenuPhotoUploading] = useState(false);
+  const [isAddingMenu, setIsAddingMenu] = useState(false);
+  const [addMenuError, setAddMenuError] = useState('');
+  const [addMenuSuccess, setAddMenuSuccess] = useState('');
+  const newMenuPhotoInputRef = useRef<HTMLInputElement>(null);
 
   // Gallery management state
   const { data: galleryImages, loading: loadingGallery, error: galleryError, refetch: refetchGallery } = useGallery();
@@ -95,6 +128,7 @@ export default function Admin({ onNavigate }: Props) {
   const [uploadCaption, setUploadCaption] = useState('');
   const [uploadAlt, setUploadAlt] = useState('');
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
+  const [previewMediaType, setPreviewMediaType] = useState<'image' | 'video' | 'audio'>('image');
   const [uploadError, setUploadError] = useState('');
   const [uploadSuccess, setUploadSuccess] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -127,16 +161,21 @@ export default function Admin({ onNavigate }: Props) {
   // Sync products form state
   useEffect(() => {
     if (products && products.length > 0) {
-      const initial: Record<string, { price: number; available: boolean; stock: number; description: string }> = {};
-      products.forEach((p) => {
-        initial[p.id] = {
-          price: p.price,
-          available: p.available,
-          stock: p.stock ?? 0,
-          description: p.description,
-        };
+      setProductForms((prev) => {
+        const next = { ...prev };
+        products.forEach((p) => {
+          const existing = prev[p.slug] ?? prev[p.id];
+          const entry = {
+            price: existing?.price ?? p.price,
+            available: p.available,
+            stock: existing?.stock ?? p.stock ?? 0,
+            description: existing?.description ?? p.description,
+          };
+          next[p.slug] = entry;
+          next[p.id] = entry;
+        });
+        return next;
       });
-      setProductForms(initial);
     }
   }, [products]);
 
@@ -350,50 +389,400 @@ export default function Admin({ onNavigate }: Props) {
     setStatusSaving(false);
   };
 
-  // 2. Product Save Action
-  const handleSaveProduct = async (productId: string) => {
-    const form = productForms[productId];
-    if (!form) return;
+  // 2. Product Availability Toggle & Save Actions
+  const handleToggleAvailability = (product: Product, newAvailable: boolean) => {
+    const currentForm = productForms[product.slug] ?? productForms[product.id] ?? {
+      price: product.price,
+      available: product.available,
+      stock: product.stock ?? 0,
+      description: product.description,
+    };
 
-    setProductSaving((prev) => ({ ...prev, [productId]: true }));
-    setProductMessages((prev) => ({ ...prev, [productId]: '' }));
+    const updatedEntry = {
+      ...currentForm,
+      available: newAvailable,
+    };
 
-    const res = await updateProduct(productId, {
-      price: Number(form.price),
-      available: form.available,
-      stock: Number(form.stock),
-      description: form.description,
-    });
+    // 1. Immediately update local UI state in 0ms (no lag, no waiting)
+    setProductForms((prev) => ({
+      ...prev,
+      [product.slug]: updatedEntry,
+      [product.id]: updatedEntry,
+    }));
+
+    // 2. Immediately show confirmation banner on screen
+    const liveMsg = newAvailable
+      ? `Live Website: ${product.name} is now marked IN STOCK!`
+      : `Live Website: ${product.name} is now marked SOLD OUT!`;
+
+    setProductMessages((prev) => ({
+      ...prev,
+      [product.slug]: liveMsg,
+      [product.id]: liveMsg,
+    }));
+    setTimeout(() => {
+      setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
+    }, 4000);
+
+    // 3. Immediately save locally, broadcast to user website, and sync in background
+    void updateProduct(
+      product.id,
+      {
+        available: newAvailable,
+        price: Number(currentForm.price),
+        stock: Number(currentForm.stock),
+        description: currentForm.description,
+      },
+      product.slug
+    );
+  };
+
+  const handleSaveProduct = async (product: Product) => {
+    const form = productForms[product.slug] ?? productForms[product.id] ?? {
+      price: product.price,
+      available: product.available,
+      stock: product.stock ?? 0,
+      description: product.description,
+    };
+
+    setProductSaving((prev) => ({ ...prev, [product.slug]: true, [product.id]: true }));
+    setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
+
+    const res = await updateProduct(
+      product.id,
+      {
+        price: Number(form.price),
+        available: form.available,
+        stock: Number(form.stock ?? product?.stock ?? 0),
+        description: form.description,
+      },
+      product.slug
+    );
 
     if (res.success) {
-      setProductMessages((prev) => ({ ...prev, [productId]: 'Price & stock updated live!' }));
+      setProductMessages((prev) => ({
+        ...prev,
+        [product.slug]: `Price & details for ${product.name} updated live!`,
+        [product.id]: `Price & details for ${product.name} updated live!`,
+      }));
       setTimeout(() => {
-        setProductMessages((prev) => ({ ...prev, [productId]: '' }));
+        setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
       }, 3500);
     }
 
-    setProductSaving((prev) => ({ ...prev, [productId]: false }));
+    setProductSaving((prev) => ({ ...prev, [product.slug]: false, [product.id]: false }));
   };
 
-  // 3. Gallery File Validation & Upload Actions
+  const handleQuickPriceSave = async (product: Product, specificPrice?: number) => {
+    const form = productForms[product.slug] ?? productForms[product.id] ?? {
+      price: product.price,
+      available: product.available,
+      stock: product.stock ?? 0,
+      description: product.description,
+    };
+
+    const priceToSave = specificPrice !== undefined ? specificPrice : Number(form.price);
+    if (isNaN(priceToSave) || priceToSave <= 0) return;
+
+    // 1. Immediately update local state in 0ms
+    const updatedEntry = {
+      ...form,
+      price: priceToSave,
+    };
+    setProductForms((prev) => ({
+      ...prev,
+      [product.slug]: updatedEntry,
+      [product.id]: updatedEntry,
+    }));
+
+    // 2. Immediately show confirmation banner
+    const priceMsg = `Live: ${product.name} price updated to ₹${priceToSave}!`;
+    setProductMessages((prev) => ({
+      ...prev,
+      [product.slug]: priceMsg,
+      [product.id]: priceMsg,
+    }));
+    setTimeout(() => {
+      setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
+    }, 3500);
+
+    // 3. Immediately broadcast to website & save in background
+    await updateProduct(
+      product.id,
+      {
+        price: priceToSave,
+        available: form.available,
+        stock: Number(form.stock ?? 0),
+        description: form.description,
+      },
+      product.slug
+    );
+  };
+
+  const handleTriggerProductPhotoUpload = (product: Product) => {
+    setTargetProductForPhoto(product);
+    if (productPhotoInputRef.current) {
+      productPhotoInputRef.current.value = '';
+      productPhotoInputRef.current.click();
+    }
+  };
+
+  const handleProductPhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !targetProductForPhoto) return;
+
+    const target = targetProductForPhoto;
+
+    setProductImageUploading((prev) => ({
+      ...prev,
+      [target.slug]: true,
+      [target.id]: true,
+    }));
+
+    try {
+      // Optimize image to ~40-70KB WebP/JPEG max 800px so it loads instantly and fits storage
+      const optimizedDataUrl = await optimizeImageForProduct(file, 800, 0.85);
+
+      const res = await updateProduct(
+        target.id,
+        {
+          image_url: optimizedDataUrl,
+        },
+        target.slug
+      );
+
+      if (res.success) {
+        setProductMessages((prev) => ({
+          ...prev,
+          [target.slug]: `Photo for ${target.name} updated live across entire website!`,
+          [target.id]: `Photo for ${target.name} updated live across entire website!`,
+        }));
+        setTimeout(() => {
+          setProductMessages((prev) => ({ ...prev, [target.slug]: '', [target.id]: '' }));
+        }, 4000);
+      } else {
+        alert(res.error || 'Failed to update product photo.');
+      }
+    } catch (err: any) {
+      console.error('Error optimizing product photo:', err);
+      alert('Could not process photo: ' + (err.message || 'Please try another photo.'));
+    } finally {
+      setProductImageUploading((prev) => ({
+        ...prev,
+        [target.slug]: false,
+        [target.id]: false,
+      }));
+      if (productPhotoInputRef.current) {
+        productPhotoInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleRemoveProductPhoto = async (product: Product) => {
+    if (
+      !confirm(
+        `Are you sure you want to remove the photo for ${product.name}? It will revert to the default illustration on the website.`
+      )
+    ) {
+      return;
+    }
+
+    setProductImageUploading((prev) => ({
+      ...prev,
+      [product.slug]: true,
+      [product.id]: true,
+    }));
+
+    const res = await updateProduct(
+      product.id,
+      {
+        image_url: '',
+      },
+      product.slug
+    );
+
+    if (res.success) {
+      setProductMessages((prev) => ({
+        ...prev,
+        [product.slug]: `Photo removed for ${product.name}. Default icon will be shown.`,
+        [product.id]: `Photo removed for ${product.name}. Default icon will be shown.`,
+      }));
+      setTimeout(() => {
+        setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
+      }, 4000);
+    }
+
+    setProductImageUploading((prev) => ({
+      ...prev,
+      [product.slug]: false,
+      [product.id]: false,
+    }));
+  };
+
+  const handleNewMenuPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNewMenuPhotoUploading(true);
+    try {
+      const optimized = await optimizeImageForProduct(file, 800, 0.85);
+      setNewMenuItem((prev) => ({ ...prev, image_url: optimized }));
+    } catch (err: any) {
+      alert('Could not process photo: ' + (err.message || 'Please try another photo.'));
+    } finally {
+      setNewMenuPhotoUploading(false);
+      if (newMenuPhotoInputRef.current) newMenuPhotoInputRef.current.value = '';
+    }
+  };
+
+  const handleAddNewMenuItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMenuItem.name.trim()) {
+      setAddMenuError('Please enter a name for the new menu item.');
+      return;
+    }
+    const priceVal = Number(newMenuItem.price);
+    if (!priceVal || priceVal <= 0) {
+      setAddMenuError('Price must be greater than ₹0.');
+      return;
+    }
+
+    setIsAddingMenu(true);
+    setAddMenuError('');
+    setAddMenuSuccess('');
+
+    try {
+      let slugBase = newMenuItem.name
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      if (!slugBase) {
+        slugBase = `item-${Date.now()}`;
+      }
+      if (newMenuItem.dietaryType === 'jain' && !slugBase.includes('jain')) {
+        slugBase = `${slugBase}-jain`;
+      } else if (newMenuItem.dietaryType === 'swaminarayan' && !slugBase.includes('swaminarayan')) {
+        slugBase = `${slugBase}-swaminarayan`;
+      }
+
+      const res = await addProduct({
+        name: newMenuItem.name.trim(),
+        slug: slugBase,
+        price: priceVal,
+        description:
+          newMenuItem.description.trim() ||
+          (newMenuItem.dietaryType === 'jain'
+            ? 'Prepared strictly per Jain dietary traditions without onion or garlic.'
+            : newMenuItem.dietaryType === 'swaminarayan'
+            ? 'Pure satvik preparation crafted strictly following Swaminarayan traditions.'
+            : 'Freshly prepared daily specialty with authentic house chutneys.'),
+        image_url: newMenuItem.image_url || '/images/kachori.webp',
+        available: newMenuItem.available,
+        stock: Number(newMenuItem.stock) || 50,
+        featured: newMenuItem.featured,
+        display_order: (products?.length ?? 4) + 1,
+      });
+
+      if (res.success && res.data) {
+        const added = res.data;
+        setAddMenuSuccess(`✓ "${added.name}" has been added live to the menu!`);
+        setProductForms((prev) => ({
+          ...prev,
+          [added.slug]: {
+            price: added.price,
+            available: added.available,
+            stock: added.stock ?? 50,
+            description: added.description,
+          },
+          [added.id]: {
+            price: added.price,
+            available: added.available,
+            stock: added.stock ?? 50,
+            description: added.description,
+          },
+        }));
+
+        setNewMenuItem({
+          name: '',
+          dietaryType: 'regular',
+          price: 40,
+          stock: 50,
+          available: true,
+          featured: false,
+          description: '',
+          image_url: '',
+        });
+
+        refetchProducts();
+
+        setTimeout(() => {
+          setShowAddMenuModal(false);
+          setAddMenuSuccess('');
+        }, 1500);
+      } else {
+        setAddMenuError(res.error || 'Unable to add menu item. Please try again.');
+      }
+    } catch (err: any) {
+      setAddMenuError(err?.message || 'Error processing menu addition.');
+    } finally {
+      setIsAddingMenu(false);
+    }
+  };
+
+  const handleDeleteProduct = async (product: Product) => {
+    if (
+      !confirm(
+        `Are you sure you want to delete "${product.name}"? It will be removed from the author panel and website menu.`
+      )
+    ) {
+      return;
+    }
+    const res = await deleteProduct(product.id || product.slug);
+    if (res.success) {
+      refetchProducts();
+    }
+  };
+
+  // 3. Gallery File Validation & Upload Actions (Supports Images, Videos MP4/WebM, Audio MP3/WAV)
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     setUploadError('');
     setUploadSuccess('');
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/svg+xml'];
-    if (!allowedTypes.includes(file.type)) {
-      setUploadError('Invalid file type. Please upload a JPEG, PNG, WebP, or AVIF image.');
+    const isVideo =
+      file.type.startsWith('video/') ||
+      file.name.toLowerCase().endsWith('.mp4') ||
+      file.name.toLowerCase().endsWith('.webm');
+    const isAudio =
+      file.type.startsWith('audio/') ||
+      file.name.toLowerCase().endsWith('.mp3') ||
+      file.name.toLowerCase().endsWith('.wav');
+    const isImage = file.type.startsWith('image/');
+
+    if (!isVideo && !isAudio && !isImage) {
+      setUploadError(
+        'Invalid file type. Supported formats: Images (JPEG, PNG, WebP), Videos (MP4, WebM), Audio (MP3, WAV).'
+      );
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
-    const MAX_SIZE = 5 * 1024 * 1024;
+    const MAX_SIZE = isVideo || isAudio ? 25 * 1024 * 1024 : 5 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      setUploadError('File is too large. Maximum allowed image size is 5MB.');
+      setUploadError(
+        isVideo || isAudio
+          ? 'Media file is too large. Maximum size for video/audio is 25MB.'
+          : 'Image file is too large. Maximum size is 5MB.'
+      );
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
+    }
+
+    const mediaType: 'image' | 'video' | 'audio' = isVideo ? 'video' : isAudio ? 'audio' : 'image';
+    setPreviewMediaType(mediaType);
+    if (isVideo || isAudio) {
+      setUploadCategory('videos');
     }
 
     const reader = new FileReader();
@@ -406,7 +795,7 @@ export default function Admin({ onNavigate }: Props) {
   const handleUploadImage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!previewDataUrl) {
-      setUploadError('Please select a photo from your device to upload.');
+      setUploadError('Please select a photo or video from your device to upload.');
       return;
     }
 
@@ -419,21 +808,23 @@ export default function Admin({ onNavigate }: Props) {
 
     const res = await addGalleryImage({
       src: previewDataUrl,
-      alt: uploadAlt || uploadCaption || `${sectionName} photo - Paras Kachoriwala`,
+      alt: uploadAlt || uploadCaption || `${sectionName} media - Paras Kachoriwala`,
       category: uploadCategory,
-      caption: uploadCaption || `${sectionName} photo`,
+      media_type: previewMediaType,
+      caption: uploadCaption || `${sectionName}`,
     });
 
     if (res.success) {
-      setUploadSuccess(`Photo uploaded successfully to "${sectionName}" folder!`);
+      setUploadSuccess(`Media uploaded successfully to "${sectionName}" folder!`);
       setPreviewDataUrl(null);
       setUploadCaption('');
       setUploadAlt('');
+      setPreviewMediaType('image');
       if (fileInputRef.current) fileInputRef.current.value = '';
       refetchGallery();
       setTimeout(() => setUploadSuccess(''), 4500);
     } else {
-      setUploadError(res.error ?? 'Failed to upload photo.');
+      setUploadError(res.error ?? 'Failed to upload media.');
     }
     setIsUploading(false);
   };
@@ -453,20 +844,31 @@ export default function Admin({ onNavigate }: Props) {
     const file = e.target.files?.[0];
     if (!file || !replacingId) return;
 
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
-    if (!allowedTypes.includes(file.type)) {
-      alert('Invalid file format. Please choose a JPEG, PNG, or WebP photo.');
+    const isVideo =
+      file.type.startsWith('video/') ||
+      file.name.toLowerCase().endsWith('.mp4') ||
+      file.name.toLowerCase().endsWith('.webm');
+    const isAudio =
+      file.type.startsWith('audio/') ||
+      file.name.toLowerCase().endsWith('.mp3') ||
+      file.name.toLowerCase().endsWith('.wav');
+    const isImage = file.type.startsWith('image/');
+
+    if (!isVideo && !isAudio && !isImage) {
+      alert('Invalid file format. Please choose a Photo (JPEG, PNG, WebP), Video (MP4, WebM), or Audio (MP3).');
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      alert('Photo is too large (max 5MB).');
+    const maxBytes = isVideo || isAudio ? 25 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      alert(isVideo || isAudio ? 'Media is too large (max 25MB).' : 'Photo is too large (max 5MB).');
       return;
     }
 
     const reader = new FileReader();
     reader.onload = async (loadEvt) => {
       const dataUrl = loadEvt.target?.result as string;
-      await updateGalleryImage(replacingId, { src: dataUrl });
+      const mediaType: 'image' | 'video' | 'audio' = isVideo ? 'video' : isAudio ? 'audio' : 'image';
+      await updateGalleryImage(replacingId, { src: dataUrl, media_type: mediaType });
       refetchGallery();
       setReplacingId(null);
       if (replaceInputRef.current) replaceInputRef.current.value = '';
@@ -666,18 +1068,21 @@ export default function Admin({ onNavigate }: Props) {
   const istDate = getISTDate();
   const isClosedForToday = storeStatus?.closed_for_date === istDate.dateString;
 
-  // Folder helper list for gallery
+  // Folder helper list for gallery (Exactly 4 folders)
   const folderCategories = [
     { id: 'customers', label: 'Customers / Community Section', icon: <Users size={16} />, desc: 'Happy customers & foodies' },
+    { id: 'stall', label: 'Stall / Cart Location', icon: <Store size={16} />, desc: 'Food cart, night stall & setup' },
     { id: 'food', label: 'Food / Menu Section', icon: <Utensils size={16} />, desc: 'Kachori, Bhel & delicious ingredients' },
-    { id: 'shop', label: 'Shop / Stall Location', icon: <Store size={16} />, desc: 'Food cart, night stall & setup' },
-    { id: 'home', label: 'Home Page Featured Preview', icon: <HomeIcon size={16} />, desc: 'Featured hero showcase on homepage' },
-    { id: 'about', label: 'About / Story Section', icon: <BookOpen size={16} />, desc: 'Heritage and story of Paras Kachoriwala' },
+    { id: 'videos', label: 'Videos & Clips (MP4/MP3)', icon: <Video size={16} />, desc: 'Videos, reels and audio clips' },
   ] as const;
 
-  const filteredGallery = (galleryImages ?? []).filter((img) =>
-    galleryFilterFolder === 'all' ? true : img.category === galleryFilterFolder
-  );
+  const filteredGallery = (galleryImages ?? []).filter((img) => {
+    if (galleryFilterFolder === 'all') return true;
+    if (galleryFilterFolder === 'stall') {
+      return img.category === 'stall' || (img.category as string) === 'shop' || (img.category as string) === 'home' || (img.category as string) === 'about';
+    }
+    return img.category === galleryFilterFolder;
+  });
 
   return (
     <div className="pt-20 sm:pt-24 pb-20 bg-spice-50/40 min-h-screen">
@@ -747,8 +1152,8 @@ export default function Admin({ onNavigate }: Props) {
                 : 'bg-white text-charcoal-700 border border-spice-200 hover:bg-spice-50'
             }`}
           >
-            <Package size={17} />
-            Menu Prices & Stock
+            <Utensils size={17} />
+            Menu & Prices
           </button>
           <button
             onClick={() => setActiveTab('gallery')}
@@ -1024,15 +1429,285 @@ export default function Admin({ onNavigate }: Props) {
         {/* ---------------------------------------------------- */}
         {activeTab === 'products' && (
           <div className="mt-8 space-y-8 animate-fade-up">
-            <div>
-              <h2 className="font-display text-2xl font-bold text-charcoal-900 flex items-center gap-2">
-                <Package size={24} className="text-spice-600" />
-                Real-Time Menu, Stock & Price Manager
-              </h2>
-              <p className="mt-1 text-sm text-charcoal-600">
-                Change item prices, adjust current stock, toggle availability, and edit descriptions.
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="font-display text-2xl font-bold text-charcoal-900 flex items-center gap-2">
+                  <Utensils size={24} className="text-spice-600" />
+                  Real-Time Menu & Price Manager
+                </h2>
+                <p className="mt-1 text-sm text-charcoal-600">
+                  Change item prices, toggle live availability (Available / Sold Out), edit descriptions, or add new items. Changes reflect instantly on the live website.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowAddMenuModal((prev) => !prev)}
+                className="btn-primary py-2.5 px-5 text-sm font-bold flex items-center gap-2 shadow-warm shrink-0 cursor-pointer self-start sm:self-auto"
+              >
+                <Plus size={18} strokeWidth={2.5} />
+                {showAddMenuModal ? 'Close Form' : 'Add New Menu Item'}
+              </button>
             </div>
+
+            {/* Hidden photo file input for new menu item */}
+            <input
+              ref={newMenuPhotoInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/avif"
+              onChange={handleNewMenuPhotoChange}
+              className="hidden"
+            />
+
+            {/* ADD NEW MENU ITEM FORM CARD */}
+            {showAddMenuModal && (
+              <div className="card p-6 sm:p-8 bg-gradient-to-br from-spice-500/10 via-spice-50 to-white border-2 border-spice-300 shadow-md animate-scale-in">
+                <div className="flex items-center justify-between pb-4 border-b border-spice-200">
+                  <div>
+                    <h3 className="font-display text-xl font-bold text-charcoal-900 flex items-center gap-2">
+                      <Plus size={20} className="text-spice-600" strokeWidth={2.5} />
+                      Add New Menu Item to Live Website
+                    </h3>
+                    <p className="text-xs text-charcoal-600 mt-0.5">
+                      Enter details below. As soon as you save, this item will automatically display on the website menu and home availability.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddMenuModal(false)}
+                    className="p-1.5 rounded-lg text-charcoal-500 hover:text-charcoal-800 hover:bg-spice-100 transition-colors cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleAddNewMenuItem} className="mt-6 space-y-6">
+                  {addMenuError && (
+                    <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-semibold text-red-700 flex items-center gap-2">
+                      <AlertCircle size={16} className="shrink-0" />
+                      <span>{addMenuError}</span>
+                    </div>
+                  )}
+
+                  {addMenuSuccess && (
+                    <div className="p-3 rounded-xl bg-leaf-50 border border-leaf-200 text-xs font-semibold text-leaf-700 flex items-center gap-2">
+                      <CheckCircle2 size={16} className="shrink-0" />
+                      <span>{addMenuSuccess}</span>
+                    </div>
+                  )}
+
+                  <div className="grid gap-6 sm:grid-cols-2">
+                    {/* Item Name */}
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
+                        Item Name *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newMenuItem.name}
+                        onChange={(e) => setNewMenuItem((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="e.g. Special Dahi Kachori, Sev Puri..."
+                        className="w-full rounded-xl border border-spice-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 focus:border-spice-500"
+                      />
+                    </div>
+
+                    {/* Dietary Type / Category */}
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
+                        Dietary Category / Preparation
+                      </label>
+                      <select
+                        value={newMenuItem.dietaryType}
+                        onChange={(e) =>
+                          setNewMenuItem((prev) => ({
+                            ...prev,
+                            dietaryType: e.target.value as 'regular' | 'jain' | 'swaminarayan' | 'special',
+                          }))
+                        }
+                        className="w-full rounded-xl border border-spice-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 focus:border-spice-500"
+                      >
+                        <option value="regular">Regular Classic Preparation</option>
+                        <option value="jain">🌿 100% Jain Friendly (No Onion / No Garlic)</option>
+                        <option value="swaminarayan">✨ Swaminarayan (Pure Satvik)</option>
+                        <option value="special">⭐ Chef's Special Signature Item</option>
+                      </select>
+                    </div>
+
+                    {/* Live Price in ₹ */}
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
+                        Live Price (₹) *
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-charcoal-400">₹</span>
+                          <input
+                            type="number"
+                            min={1}
+                            required
+                            value={newMenuItem.price || ''}
+                            onChange={(e) =>
+                              setNewMenuItem((prev) => ({
+                                ...prev,
+                                price: e.target.value === '' ? 0 : Number(e.target.value),
+                              }))
+                            }
+                            className="w-full rounded-xl border border-spice-200 bg-white pl-8 pr-4 py-2.5 text-base font-bold text-charcoal-900 focus:border-spice-500"
+                          />
+                        </div>
+                        <div className="flex gap-1">
+                          {[35, 40, 50, 60].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => setNewMenuItem((prev) => ({ ...prev, price: preset }))}
+                              className={`px-2.5 py-2 text-xs font-bold rounded-xl border transition-colors cursor-pointer ${
+                                newMenuItem.price === preset
+                                  ? 'bg-spice-600 text-white border-spice-600'
+                                  : 'bg-white text-charcoal-700 border-spice-200 hover:bg-spice-50'
+                              }`}
+                            >
+                              ₹{preset}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Availability Toggle */}
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
+                        Initial Availability
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setNewMenuItem((prev) => ({ ...prev, available: true }))}
+                          className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                            newMenuItem.available
+                              ? 'bg-leaf-500 text-white border-leaf-600 shadow-sm'
+                              : 'bg-white text-charcoal-700 border-spice-200 hover:bg-spice-50'
+                          }`}
+                        >
+                          <CheckCircle2 size={14} /> In Stock (Available)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewMenuItem((prev) => ({ ...prev, available: false }))}
+                          className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                            !newMenuItem.available
+                              ? 'bg-red-500 text-white border-red-600 shadow-sm'
+                              : 'bg-white text-charcoal-700 border-spice-200 hover:bg-spice-50'
+                          }`}
+                        >
+                          <XCircle size={14} /> Sold Out
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Photo Upload & Preview */}
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
+                      Item Photo (Optional)
+                    </label>
+                    <div className="flex items-center gap-4 flex-wrap">
+                      <div className="relative h-20 w-20 rounded-xl overflow-hidden border border-spice-200 bg-charcoal-900 grid place-items-center shrink-0">
+                        {newMenuItem.image_url ? (
+                          <img
+                            src={newMenuItem.image_url}
+                            alt="New menu item"
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="text-center p-2 text-spice-300">
+                            <Utensils size={20} className="mx-auto" />
+                            <span className="text-[9px] font-bold block mt-1">Default Icon</span>
+                          </div>
+                        )}
+                        {newMenuPhotoUploading && (
+                          <div className="absolute inset-0 bg-charcoal-950/70 grid place-items-center text-white">
+                            <RefreshCw size={18} className="animate-spin text-marigold-400" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => newMenuPhotoInputRef.current?.click()}
+                          disabled={newMenuPhotoUploading}
+                          className="btn-outline py-2 px-3 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Camera size={14} />
+                          {newMenuItem.image_url ? 'Change Photo' : 'Upload Photo'}
+                        </button>
+                        {newMenuItem.image_url && (
+                          <button
+                            type="button"
+                            onClick={() => setNewMenuItem((prev) => ({ ...prev, image_url: '' }))}
+                            className="btn py-2 px-3 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 cursor-pointer rounded-xl"
+                          >
+                            Remove
+                          </button>
+                        )}
+                        <span className="text-[11px] text-charcoal-500">
+                          Allowed: JPEG, PNG, WebP • Auto-optimized for ultra-fast loading
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Description */}
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
+                      Description
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={newMenuItem.description}
+                      onChange={(e) => setNewMenuItem((prev) => ({ ...prev, description: e.target.value }))}
+                      placeholder="e.g. Crisp golden-fried Kachori topped with house chutneys and fresh spices..."
+                      className="w-full rounded-xl border border-spice-200 bg-white p-3 text-xs text-charcoal-900 focus:border-spice-500 resize-none"
+                    />
+                  </div>
+
+                  {/* Featured / Signature Toggle */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="new-item-featured"
+                      checked={newMenuItem.featured}
+                      onChange={(e) => setNewMenuItem((prev) => ({ ...prev, featured: e.target.checked }))}
+                      className="rounded border-spice-300 text-spice-600 focus:ring-spice-500 h-4 w-4 cursor-pointer"
+                    />
+                    <label htmlFor="new-item-featured" className="text-xs font-bold text-charcoal-800 cursor-pointer">
+                      ⭐ Mark as Signature / Featured Item
+                    </label>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-spice-200">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddMenuModal(false)}
+                      className="btn-outline py-2.5 px-4 text-xs font-bold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isAddingMenu}
+                      className="btn-primary py-2.5 px-6 text-sm font-bold flex items-center gap-2 shadow-warm cursor-pointer disabled:opacity-50"
+                    >
+                      {isAddingMenu ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={16} strokeWidth={2.5} />}
+                      {isAddingMenu ? 'Adding to Menu...' : 'Publish Menu Item Live'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
 
             {productsError && (
               <SectionError
@@ -1043,37 +1718,57 @@ export default function Admin({ onNavigate }: Props) {
               />
             )}
 
+            {/* Hidden file input for uploading/replacing product photo */}
+            <input
+              ref={productPhotoInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/avif"
+              onChange={handleProductPhotoFileChange}
+              className="hidden"
+            />
+
             <div className="grid gap-8 lg:grid-cols-2">
               {(products ?? []).map((product) => {
-                const form = productForms[product.id] ?? {
+                const form = productForms[product.slug] ?? productForms[product.id] ?? {
                   price: product.price,
                   available: product.available,
                   stock: product.stock ?? 0,
                   description: product.description,
                 };
-                const saving = productSaving[product.id];
-                const msg = productMessages[product.id];
+                const saving = productSaving[product.slug] || productSaving[product.id];
+                const isPhotoUploading = productImageUploading[product.slug] || productImageUploading[product.id];
+                const msg = productMessages[product.slug] || productMessages[product.id];
 
                 return (
-                  <div key={product.id} className="card p-7 sm:p-8 space-y-6 flex flex-col justify-between">
+                  <div key={product.id || product.slug} className="card p-7 sm:p-8 space-y-6 flex flex-col justify-between">
                     <div className="space-y-5">
+                      {/* Product Header & Photo Management */}
                       <div className="flex items-start gap-4">
-                        {product.image_url ? (
-                          <img
-                            src={product.image_url}
-                            alt={product.name}
-                            className="h-20 w-20 rounded-2xl object-cover border border-spice-100 shadow-md shrink-0"
-                          />
-                        ) : (
-                          <div className="h-20 w-20 rounded-2xl bg-spice-100/70 border border-spice-200 grid place-items-center text-spice-600 shrink-0 text-center p-1">
-                            <Utensils size={24} />
-                            <span className="text-[9px] font-bold text-spice-800 leading-tight">No Photo</span>
-                          </div>
-                        )}
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between">
-                            <h3 className="font-display text-2xl font-bold text-charcoal-900">{product.name}</h3>
-                            <span className="text-xs font-bold uppercase tracking-wider text-spice-600 bg-spice-100 px-2.5 py-1 rounded-full">
+                        <div className="relative group shrink-0">
+                          {product.image_url ? (
+                            <img
+                              src={product.image_url}
+                              alt={product.name}
+                              className="h-24 w-24 rounded-2xl object-cover border border-spice-100 shadow-md shrink-0 bg-charcoal-900"
+                            />
+                          ) : (
+                            <div className="h-24 w-24 rounded-2xl bg-spice-100/80 border border-spice-200 grid place-items-center text-spice-600 shrink-0 text-center p-2">
+                              <Utensils size={24} />
+                              <span className="text-[10px] font-bold text-spice-800 leading-tight">No Photo</span>
+                            </div>
+                          )}
+
+                          {isPhotoUploading && (
+                            <div className="absolute inset-0 bg-charcoal-900/70 rounded-2xl grid place-items-center text-white backdrop-blur-[1px]">
+                              <RefreshCw size={22} className="animate-spin text-marigold-400" />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <h3 className="font-display text-2xl font-bold text-charcoal-900 truncate">{product.name}</h3>
+                            <span className="text-xs font-bold uppercase tracking-wider text-spice-600 bg-spice-100 px-2.5 py-1 rounded-full shrink-0">
                               {product.slug}
                             </span>
                           </div>
@@ -1084,77 +1779,155 @@ export default function Admin({ onNavigate }: Props) {
                               ? '✨ Swaminarayan (Satvik Preparation)'
                               : 'Signature Food Item'}
                           </p>
+
+                          {/* Image Upload / Replace Action Buttons */}
+                          <div className="mt-3 flex items-center gap-2 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={() => handleTriggerProductPhotoUpload(product)}
+                              disabled={isPhotoUploading}
+                              className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl bg-spice-600 hover:bg-spice-700 text-white shadow-xs transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                              title="Select an image to upload or replace for this product"
+                            >
+                              <Camera size={14} />
+                              {product.image_url ? 'Replace Photo' : 'Upload Photo'}
+                            </button>
+
+                            {product.image_url && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveProductPhoto(product)}
+                                disabled={isPhotoUploading}
+                                className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                                title="Remove photo and display default icon"
+                              >
+                                <Trash2 size={13} />
+                                Remove
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5 flex items-center gap-1">
+                      {/* Live Price Management with Instant Save */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs font-bold uppercase tracking-wider text-charcoal-700 flex items-center gap-1">
                             <IndianRupee size={13} className="text-spice-600" /> Live Price (₹)
                           </label>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-charcoal-400">
+                          <span className="text-[11px] text-charcoal-500 font-medium">Auto-saves on change or blur</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="relative flex-1">
+                            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-charcoal-400">
                               ₹
                             </span>
                             <input
                               type="number"
                               min={1}
                               value={form.price}
-                              onChange={(e) =>
+                              onChange={(e) => {
+                                const newPrice = Number(e.target.value);
                                 setProductForms((prev) => ({
                                   ...prev,
-                                  [product.id]: { ...form, price: Number(e.target.value) },
-                                }))
-                              }
-                              className="w-full rounded-xl border border-spice-200 bg-spice-50/50 pl-7 pr-3 py-2.5 text-base font-bold text-charcoal-900 focus:border-spice-500 focus:bg-white"
+                                  [product.slug]: { ...form, price: newPrice },
+                                  [product.id]: { ...form, price: newPrice },
+                                }));
+                              }}
+                              onBlur={() => handleQuickPriceSave(product)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleQuickPriceSave(product);
+                                }
+                              }}
+                              className="w-full rounded-xl border border-spice-200 bg-spice-50/50 pl-8 pr-4 py-2.5 text-base font-bold text-charcoal-900 focus:border-spice-500 focus:bg-white"
                             />
                           </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleQuickPriceSave(product)}
+                            className="px-4 py-2.5 rounded-xl bg-spice-600 hover:bg-spice-700 text-white text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all active:scale-95 shrink-0 cursor-pointer"
+                            title="Instantly save and apply this price across the entire website"
+                          >
+                            <Check size={15} strokeWidth={2.5} />
+                            Save Price
+                          </button>
                         </div>
 
-                        <div>
-                          <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5 flex items-center gap-1">
-                            <Package size={13} className="text-spice-600" /> Stock Units
-                          </label>
-                          <input
-                            type="number"
-                            min={0}
-                            value={form.stock}
-                            onChange={(e) =>
-                              setProductForms((prev) => ({
-                                ...prev,
-                                [product.id]: { ...form, stock: Number(e.target.value) },
-                              }))
-                            }
-                            className="w-full rounded-xl border border-spice-200 bg-spice-50/50 px-3 py-2.5 text-base font-bold text-charcoal-900 focus:border-spice-500 focus:bg-white"
-                          />
+                        {/* Quick Price Increment / Decrement & Presets */}
+                        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] uppercase font-bold text-charcoal-500 mr-1">Quick:</span>
+                          {[-5, 5].map((delta) => {
+                            const newPrice = Math.max(1, form.price + delta);
+                            return (
+                              <button
+                                key={delta}
+                                type="button"
+                                onClick={() => handleQuickPriceSave(product, newPrice)}
+                                className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-spice-100 hover:bg-spice-200 text-spice-800 border border-spice-200 transition-colors cursor-pointer active:scale-95"
+                              >
+                                {delta > 0 ? `+₹${delta}` : `-₹${Math.abs(delta)}`}
+                              </button>
+                            );
+                          })}
+                          {[35, 40, 45, 50].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => handleQuickPriceSave(product, preset)}
+                              className={`text-[11px] font-bold px-2 py-0.5 rounded-lg transition-colors cursor-pointer active:scale-95 ${
+                                form.price === preset
+                                  ? 'bg-spice-600 text-white shadow-xs'
+                                  : 'bg-spice-50 hover:bg-spice-100 text-charcoal-700 border border-spice-200'
+                              }`}
+                            >
+                              ₹{preset}
+                            </button>
+                          ))}
                         </div>
                       </div>
 
+                      {/* Availability Toggle */}
                       <div className="flex items-center justify-between p-4 rounded-xl bg-spice-50/70 border border-spice-100">
                         <div>
-                          <p className="text-xs font-bold text-charcoal-800 uppercase">Availability Status</p>
+                          <p className="text-xs font-bold text-charcoal-800 uppercase flex items-center gap-1.5">
+                            Availability Status
+                            <span
+                              className={`inline-block h-2 w-2 rounded-full ${
+                                form.available ? 'bg-leaf-500 animate-pulse' : 'bg-red-500'
+                              }`}
+                            />
+                          </p>
                           <p className="text-xs text-charcoal-500 mt-0.5">
-                            {form.available ? 'Customers see Available' : 'Marked as Sold Out on menu'}
+                            {form.available
+                              ? 'Currently marked as AVAILABLE on website'
+                              : 'Currently marked as SOLD OUT on website'}
                           </p>
                         </div>
                         <button
                           type="button"
-                          onClick={() =>
-                            setProductForms((prev) => ({
-                              ...prev,
-                              [product.id]: { ...form, available: !form.available },
-                            }))
-                          }
-                          className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+                          onClick={() => handleToggleAvailability(product, !form.available)}
+                          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-150 shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer select-none ${
                             form.available
-                              ? 'bg-leaf-500 text-white hover:bg-leaf-600'
-                              : 'bg-red-500 text-white hover:bg-red-600'
+                              ? 'bg-leaf-500 text-white hover:bg-leaf-600 shadow-leaf-500/20'
+                              : 'bg-red-500 text-white hover:bg-red-600 shadow-red-500/20'
                           }`}
+                          title="Click to instantly toggle live status between In Stock and Sold Out"
                         >
-                          {form.available ? '✓ In Stock' : '✕ Sold Out'}
+                          {form.available ? (
+                            <CheckCircle2 size={15} className="shrink-0" />
+                          ) : (
+                            <XCircle size={15} className="shrink-0" />
+                          )}
+                          <span>
+                            {form.available ? '✓ In Stock (Live)' : '✕ Sold Out (Live)'}
+                          </span>
                         </button>
                       </div>
 
+                      {/* Description */}
                       <div>
                         <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
                           Description
@@ -1162,12 +1935,14 @@ export default function Admin({ onNavigate }: Props) {
                         <textarea
                           rows={2}
                           value={form.description}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            const newDesc = e.target.value;
                             setProductForms((prev) => ({
                               ...prev,
-                              [product.id]: { ...form, description: e.target.value },
-                            }))
-                          }
+                              [product.slug]: { ...form, description: newDesc },
+                              [product.id]: { ...form, description: newDesc },
+                            }));
+                          }}
                           className="w-full rounded-xl border border-spice-200 bg-spice-50/50 p-3 text-xs text-charcoal-900 focus:border-spice-500 focus:bg-white resize-none"
                         />
                       </div>
@@ -1179,14 +1954,24 @@ export default function Admin({ onNavigate }: Props) {
                           <CheckCircle2 size={15} /> {msg}
                         </p>
                       )}
-                      <button
-                        onClick={() => handleSaveProduct(product.id)}
-                        disabled={saving}
-                        className="btn-primary w-full py-2.5 text-sm flex items-center justify-center gap-2 shadow-warm"
-                      >
-                        {saving ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
-                        {saving ? 'Updating Live Price & Stock...' : `Save ${product.name} Details`}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleSaveProduct(product)}
+                          disabled={saving}
+                          className="btn-primary flex-1 py-2.5 text-sm flex items-center justify-center gap-2 shadow-warm cursor-pointer"
+                        >
+                          {saving ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
+                          {saving ? 'Updating Live Price & Details...' : `Save ${product.name} Details`}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteProduct(product)}
+                          className="p-2.5 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 transition-colors cursor-pointer shrink-0"
+                          title={`Delete ${product.name} from menu`}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1203,11 +1988,11 @@ export default function Admin({ onNavigate }: Props) {
             <div>
               <h2 className="font-display text-2xl font-bold text-charcoal-900 flex items-center gap-2">
                 <ImageIcon size={24} className="text-spice-600" />
-                Gallery & Website Section Folder Manager
+                Gallery & Media Folder Manager
               </h2>
               <p className="mt-1 text-sm text-charcoal-600">
-                Upload photos directly into target folders like <strong>Customers</strong>, <strong>Food</strong>,{' '}
-                <strong>Shop</strong>, <strong>Home Page</strong>, or <strong>About</strong>.
+                Upload photos and videos directly into the 4 designated folders: <strong>Customers</strong>,{' '}
+                <strong>Stall</strong>, <strong>Food / Menu</strong>, or <strong>Videos (MP4/MP3)</strong>.
               </p>
             </div>
 
@@ -1215,7 +2000,7 @@ export default function Admin({ onNavigate }: Props) {
             <div className="card p-7 sm:p-8 bg-gradient-to-br from-spice-500/10 via-spice-50 to-white border border-spice-300">
               <h3 className="font-display text-xl font-bold text-charcoal-900 flex items-center gap-2">
                 <Upload size={20} className="text-spice-600" />
-                Upload New Photo into a Website Folder
+                Upload New Photo or Video into a Website Folder
               </h3>
 
               <form onSubmit={handleUploadImage} className="mt-5 space-y-6">
@@ -1236,10 +2021,10 @@ export default function Admin({ onNavigate }: Props) {
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-800 mb-2 flex items-center gap-1.5">
                     <Folder size={14} className="text-spice-600" />
-                    1. Select Destination Folder / Website Section:
+                    1. Select Destination Folder (4 Folders):
                   </label>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     {folderCategories.map((folder) => {
                       const isSelected = uploadCategory === folder.id;
                       return (
@@ -1247,7 +2032,7 @@ export default function Admin({ onNavigate }: Props) {
                           key={folder.id}
                           type="button"
                           onClick={() => setUploadCategory(folder.id)}
-                          className={`p-3.5 rounded-2xl border text-left flex items-start gap-3 transition-all ${
+                          className={`p-3.5 rounded-2xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
                             isSelected
                               ? 'border-spice-600 bg-white ring-2 ring-spice-500 shadow-md'
                               : 'border-spice-200 bg-white/70 hover:bg-white hover:border-spice-300'
@@ -1280,24 +2065,38 @@ export default function Admin({ onNavigate }: Props) {
                   {/* File Picker & Preview */}
                   <div className="md:col-span-5 flex flex-col justify-center">
                     <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
-                      2. Choose Image File
+                      2. Choose Media File (Image, Video or Audio)
                     </label>
                     <input
                       type="file"
                       ref={fileInputRef}
                       onChange={handleFileSelect}
-                      accept="image/jpeg,image/png,image/webp,image/avif"
+                      accept="image/jpeg,image/png,image/webp,image/avif,video/mp4,video/webm,video/*,audio/mp3,audio/mpeg,audio/wav,audio/*"
                       className="block w-full text-xs text-charcoal-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-spice-600 file:text-white hover:file:bg-spice-700 cursor-pointer"
                     />
                     <p className="text-[11px] text-charcoal-500 mt-1.5">
-                      Allowed: JPEG, PNG, WebP, AVIF • Max size: 5MB
+                      Supported: Photos (JPEG, PNG, WebP) • Videos (MP4, WebM up to 25MB) • Audio (MP3 up to 25MB)
                     </p>
 
                     {previewDataUrl && (
-                      <div className="mt-3 relative rounded-xl overflow-hidden border border-spice-200 aspect-[4/3] bg-charcoal-950 max-w-[220px]">
-                        <img src={previewDataUrl} alt="Preview" className="h-full w-full object-cover" />
+                      <div className="mt-3 relative rounded-xl overflow-hidden border border-spice-200 aspect-[4/3] bg-charcoal-950 max-w-[240px]">
+                        {previewMediaType === 'video' ? (
+                          <video
+                            src={previewDataUrl}
+                            controls
+                            className="h-full w-full object-cover"
+                          />
+                        ) : previewMediaType === 'audio' ? (
+                          <div className="h-full w-full flex flex-col items-center justify-center p-4 text-center bg-charcoal-900 text-white">
+                            <Music size={32} className="text-marigold-400 mb-2" />
+                            <span className="text-xs font-bold">Audio Preview</span>
+                            <audio src={previewDataUrl} controls className="w-full mt-2" />
+                          </div>
+                        ) : (
+                          <img src={previewDataUrl} alt="Preview" className="h-full w-full object-cover" />
+                        )}
                         <span className="absolute bottom-1 left-1 right-1 bg-charcoal-950/80 text-white text-[10px] py-0.5 text-center rounded">
-                          Upload Preview
+                          Upload Preview ({previewMediaType.toUpperCase()})
                         </span>
                       </div>
                     )}
@@ -1307,13 +2106,13 @@ export default function Admin({ onNavigate }: Props) {
                   <div className="md:col-span-7 space-y-4">
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-charcoal-700 mb-1.5">
-                        3. Photo Caption / Title (Optional)
+                        3. Caption / Title (Optional)
                       </label>
                       <input
                         type="text"
                         value={uploadCaption}
                         onChange={(e) => setUploadCaption(e.target.value)}
-                        placeholder="e.g. Regular customers enjoying fresh Kachori"
+                        placeholder="e.g. Regular customers enjoying fresh Kachori, evening stall clip..."
                         className="w-full rounded-xl border border-spice-200 bg-white px-3.5 py-2.5 text-sm text-charcoal-900 focus:border-spice-500"
                       />
                     </div>
@@ -1337,56 +2136,53 @@ export default function Admin({ onNavigate }: Props) {
                   <button
                     type="submit"
                     disabled={isUploading || !previewDataUrl}
-                    className="btn-primary py-2.5 px-6 text-sm flex items-center gap-2 shadow-warm disabled:opacity-50"
+                    className="btn-primary py-2.5 px-6 text-sm flex items-center gap-2 shadow-warm disabled:opacity-50 cursor-pointer"
                   >
                     {isUploading ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={16} />}
                     {isUploading
-                      ? 'Uploading Photo...'
+                      ? 'Uploading Media...'
                       : `Save & Publish to ${folderCategories.find((f) => f.id === uploadCategory)?.label}`}
                   </button>
                 </div>
               </form>
             </div>
 
-            {/* Existing Gallery Photos List with Folder Filtering */}
+            {/* Existing Gallery Photos & Media List with Folder Filtering */}
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <h3 className="font-display text-xl font-bold text-charcoal-900">
-                    Uploaded Photos ({filteredGallery.length})
+                    Uploaded Media ({filteredGallery.length})
                   </h3>
 
                   {/* Folder filter */}
                   <select
                     value={galleryFilterFolder}
                     onChange={(e) => setGalleryFilterFolder(e.target.value as GalleryCategory)}
-                    className="rounded-xl border border-spice-200 bg-white px-3 py-1.5 text-xs font-bold text-charcoal-800"
+                    className="rounded-xl border border-spice-200 bg-white px-3 py-1.5 text-xs font-bold text-charcoal-800 cursor-pointer"
                   >
                     <option value="all">📁 All Folders ({galleryImages?.length ?? 0})</option>
                     <option value="customers">
                       👥 Customers ({galleryImages?.filter((g) => g.category === 'customers').length ?? 0})
                     </option>
+                    <option value="stall">
+                      🛒 Stall / Cart ({galleryImages?.filter((g) => g.category === 'stall' || (g.category as string) === 'shop').length ?? 0})
+                    </option>
                     <option value="food">
                       🍽️ Food / Menu ({galleryImages?.filter((g) => g.category === 'food').length ?? 0})
                     </option>
-                    <option value="shop">
-                      🛒 Shop / Cart ({galleryImages?.filter((g) => g.category === 'shop').length ?? 0})
-                    </option>
-                    <option value="home">
-                      🏠 Home Page ({galleryImages?.filter((g) => g.category === 'home').length ?? 0})
-                    </option>
-                    <option value="about">
-                      📖 About ({galleryImages?.filter((g) => g.category === 'about').length ?? 0})
+                    <option value="videos">
+                      🎬 Videos & Clips ({galleryImages?.filter((g) => g.category === 'videos' || g.media_type === 'video' || g.media_type === 'audio').length ?? 0})
                     </option>
                   </select>
                 </div>
 
                 <button
                   onClick={refetchGallery}
-                  className="btn-outline text-xs py-2 px-3 self-start sm:self-auto flex items-center gap-1.5"
+                  className="btn-outline text-xs py-2 px-3 self-start sm:self-auto flex items-center gap-1.5 cursor-pointer"
                 >
                   <RefreshCw size={13} className={loadingGallery ? 'animate-spin' : ''} />
-                  Refresh Photos
+                  Refresh Media
                 </button>
               </div>
 
@@ -1394,70 +2190,117 @@ export default function Admin({ onNavigate }: Props) {
                 <SectionSkeleton variant="gallery" count={6} />
               ) : galleryError ? (
                 <SectionError
-                  title="Unable to load gallery photos."
+                  title="Unable to load gallery media."
                   message={galleryError}
                   onRetry={refetchGallery}
                 />
               ) : filteredGallery.length > 0 ? (
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {filteredGallery.map((img) => (
-                    <div key={img.id} className="card p-4 flex flex-col justify-between space-y-3">
-                      <div>
-                        <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-charcoal-950">
-                          <img src={img.src} alt={img.alt} loading="lazy" decoding="async" className="h-full w-full object-cover" />
-                          <span className="absolute top-2 left-2 rounded-full bg-charcoal-900/85 backdrop-blur-md text-marigold-300 text-[10px] font-bold uppercase px-2.5 py-0.5 border border-white/20">
-                            {img.category === 'customers' ? '👥 Customers' : img.category}
-                          </span>
-                        </div>
-                        <p className="font-bold text-sm text-charcoal-900 mt-3 truncate">{img.caption || img.alt}</p>
-                        <p className="text-[11px] text-charcoal-400 mt-0.5">
-                          Uploaded: {img.created_at ? new Date(img.created_at).toLocaleDateString() : 'Active'}
-                        </p>
-                      </div>
+                  {filteredGallery.map((img) => {
+                    const isVideo =
+                      img.media_type === 'video' ||
+                      img.src.toLowerCase().endsWith('.mp4') ||
+                      img.src.toLowerCase().endsWith('.webm') ||
+                      img.src.startsWith('data:video/');
+                    const isAudio =
+                      img.media_type === 'audio' ||
+                      img.src.toLowerCase().endsWith('.mp3') ||
+                      img.src.toLowerCase().endsWith('.wav') ||
+                      img.src.startsWith('data:audio/');
 
-                      {/* Move Category / Action Buttons */}
-                      <div className="pt-2 border-t border-spice-100 flex flex-col gap-2">
-                        <div className="flex items-center justify-between text-xs gap-2">
-                          <span className="text-[11px] text-charcoal-500 font-semibold">Folder:</span>
-                          <select
-                            value={img.category}
-                            onChange={(e) =>
-                              handleChangeImageCategory(img.id, e.target.value as GalleryImage['category'])
-                            }
-                            className="text-xs bg-spice-50 border border-spice-200 rounded-lg px-2 py-1 text-charcoal-800 font-semibold"
-                          >
-                            <option value="customers">👥 Customers</option>
-                            <option value="food">🍽️ Food / Menu</option>
-                            <option value="shop">🛒 Shop / Cart</option>
-                            <option value="home">🏠 Home Page</option>
-                            <option value="about">📖 About Story</option>
-                          </select>
+                    return (
+                      <div key={img.id} className="card p-4 flex flex-col justify-between space-y-3">
+                        <div>
+                          <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-charcoal-950">
+                            {isVideo ? (
+                              <video
+                                src={img.src}
+                                preload="metadata"
+                                muted
+                                playsInline
+                                className="h-full w-full object-cover"
+                              />
+                            ) : isAudio ? (
+                              <div className="h-full w-full flex flex-col items-center justify-center bg-charcoal-900 text-white p-4">
+                                <Music size={32} className="text-marigold-400 mb-2" />
+                                <span className="text-xs font-bold">Audio Clip (MP3)</span>
+                              </div>
+                            ) : (
+                              <img
+                                src={img.src}
+                                alt={img.alt}
+                                loading="lazy"
+                                decoding="async"
+                                className="h-full w-full object-cover"
+                              />
+                            )}
+                            <span className="absolute top-2 left-2 rounded-full bg-charcoal-900/85 backdrop-blur-md text-marigold-300 text-[10px] font-bold uppercase px-2.5 py-0.5 border border-white/20">
+                              {isVideo
+                                ? '🎬 Video'
+                                : isAudio
+                                ? '🎵 Audio'
+                                : img.category === 'customers'
+                                ? '👥 Customers'
+                                : img.category === 'stall' || (img.category as string) === 'shop'
+                                ? '🛒 Stall'
+                                : '🍽️ Food'}
+                            </span>
+                          </div>
+                          <p className="font-bold text-sm text-charcoal-900 mt-3 truncate">{img.caption || img.alt}</p>
+                          <p className="text-[11px] text-charcoal-400 mt-0.5">
+                            Uploaded: {img.created_at ? new Date(img.created_at).toLocaleDateString() : 'Active'}
+                          </p>
                         </div>
 
-                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-spice-50">
-                          <button
-                            onClick={() => handleTriggerReplace(img.id)}
-                            className="btn-outline text-[11px] py-1.5 px-2.5 text-charcoal-700 flex items-center gap-1"
-                          >
-                            <Upload size={12} /> Replace Photo
-                          </button>
-                          <button
-                            onClick={() => handleDeleteGalleryImage(img.id)}
-                            className="text-xs text-red-600 hover:text-red-800 flex items-center gap-1 font-semibold p-1"
-                          >
-                            <Trash2 size={13} /> Delete
-                          </button>
+                        {/* Move Category / Action Buttons */}
+                        <div className="pt-2 border-t border-spice-100 flex flex-col gap-2">
+                          <div className="flex items-center justify-between text-xs gap-2">
+                            <span className="text-[11px] text-charcoal-500 font-semibold">Folder:</span>
+                            <select
+                              value={
+                                (img.category as string) === 'shop' ||
+                                (img.category as string) === 'home' ||
+                                (img.category as string) === 'about'
+                                  ? 'stall'
+                                  : img.category
+                              }
+                              onChange={(e) =>
+                                handleChangeImageCategory(img.id, e.target.value as GalleryImage['category'])
+                              }
+                              className="text-xs bg-spice-50 border border-spice-200 rounded-lg px-2 py-1 text-charcoal-800 font-semibold cursor-pointer"
+                            >
+                              <option value="customers">👥 Customers</option>
+                              <option value="stall">🛒 Stall / Cart</option>
+                              <option value="food">🍽️ Food / Menu</option>
+                              <option value="videos">🎬 Videos (MP4/MP3)</option>
+                            </select>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2 pt-1 border-t border-spice-50">
+                            <button
+                              onClick={() => handleTriggerReplace(img.id)}
+                              className="btn-outline text-[11px] py-1.5 px-2.5 text-charcoal-700 flex items-center gap-1 cursor-pointer"
+                            >
+                              <Upload size={12} /> Replace Media
+                            </button>
+                            <button
+                              onClick={() => handleDeleteGalleryImage(img.id)}
+                              className="text-xs text-red-600 hover:text-red-800 flex items-center gap-1 font-semibold p-1 cursor-pointer"
+                            >
+                              <Trash2 size={13} /> Delete
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="card p-12 text-center max-w-md mx-auto">
                   <ImageIcon size={36} className="mx-auto text-spice-300" />
-                  <h3 className="mt-4 font-display text-lg font-bold text-charcoal-900">No Photos in this Folder</h3>
+                  <h3 className="mt-4 font-display text-lg font-bold text-charcoal-900">No Media in this Folder</h3>
                   <p className="mt-1 text-sm text-charcoal-600">
-                    Upload a photo and assign it to this section above.
+                    Upload a photo or video and assign it to this section above.
                   </p>
                 </div>
               )}

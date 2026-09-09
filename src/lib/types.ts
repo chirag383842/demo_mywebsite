@@ -9,6 +9,7 @@ export type Product = {
   stock: number | null;
   featured: boolean;
   display_order: number;
+  updated_at?: string;
 };
 
 export type StoreStatus = {
@@ -44,13 +45,14 @@ export type Review = {
   source?: 'justdial' | 'verified';
 };
 
-export type GalleryCategory = 'all' | 'food' | 'shop' | 'customers' | 'about' | 'home';
+export type GalleryCategory = 'all' | 'customers' | 'stall' | 'food' | 'videos';
 
 export type GalleryImage = {
   id: string;
   src: string;
   alt: string;
-  category: 'food' | 'shop' | 'customers' | 'about' | 'home';
+  category: 'customers' | 'stall' | 'food' | 'videos' | 'shop' | 'about' | 'home';
+  media_type?: 'image' | 'video' | 'audio';
   caption?: string;
   display_order?: number;
   created_at?: string;
