@@ -1,34 +1,92 @@
 -- =========================================================================
--- PARAS KACHORIWALA: REAL-TIME CLIENT ACCESS & RLS POLICIES
--- Run this script in your Supabase SQL Editor:
--- https://supabase.com/dashboard/project/nsvuwjtyevhiwkxokokt/sql
+-- PARAS KACHORIWALA: COMPLETE DATABASE & REAL-TIME MULTI-DEVICE SYNC SETUP
+-- Run this single script in your Supabase SQL Editor:
+-- https://supabase.com/dashboard/project/xrvdohzqdzcunqshgqoz/sql
 -- =========================================================================
 
--- 1. Enable Row Level Security
-ALTER TABLE IF EXISTS products ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS store_status ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS feedback ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS gallery ENABLE ROW LEVEL SECURITY;
+-- 1. Create Tables If Not Exist
 
--- Store status overrides used by the Author portal
-ALTER TABLE IF EXISTS store_status ADD COLUMN IF NOT EXISTS closed_for_date text;
-ALTER TABLE IF EXISTS store_status ADD COLUMN IF NOT EXISTS force_open_date text;
+-- Products table
+CREATE TABLE IF NOT EXISTS products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug text UNIQUE NOT NULL,
+  name text NOT NULL,
+  price integer NOT NULL DEFAULT 40,
+  description text NOT NULL DEFAULT '',
+  image_url text NOT NULL DEFAULT '',
+  available boolean NOT NULL DEFAULT true,
+  stock integer DEFAULT 50,
+  featured boolean NOT NULL DEFAULT false,
+  display_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
 
--- 2. Clean up existing conflicting policies
+-- Store status table
+CREATE TABLE IF NOT EXISTS store_status (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  is_open boolean NOT NULL DEFAULT true,
+  crowd_level text NOT NULL DEFAULT 'Moderate',
+  last_updated timestamptz DEFAULT now(),
+  closed_for_date text,
+  force_open_date text,
+  updated_by text
+);
+
+-- Ensure columns exist if table was already present
+ALTER TABLE store_status ADD COLUMN IF NOT EXISTS closed_for_date text;
+ALTER TABLE store_status ADD COLUMN IF NOT EXISTS force_open_date text;
+
+-- Feedback & Reviews table
+CREATE TABLE IF NOT EXISTS feedback (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  overall_rating integer NOT NULL,
+  food_rating integer,
+  service_rating integer,
+  cleanliness_rating integer,
+  message text,
+  customer_name text,
+  approved boolean NOT NULL DEFAULT true,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Gallery table
+CREATE TABLE IF NOT EXISTS gallery (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  src text NOT NULL,
+  alt text NOT NULL,
+  category text NOT NULL DEFAULT 'food',
+  caption text,
+  display_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz DEFAULT now()
+);
+
+-- 2. Enable Row Level Security (RLS) on all tables
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE store_status ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gallery ENABLE ROW LEVEL SECURITY;
+
+-- 3. Clean up any existing conflicting policies
 DROP POLICY IF EXISTS "allow_all_products" ON products;
 DROP POLICY IF EXISTS "public_read_products" ON products;
 DROP POLICY IF EXISTS "public_update_products" ON products;
 DROP POLICY IF EXISTS "public_insert_products" ON products;
+DROP POLICY IF EXISTS "public_delete_products" ON products;
 
 DROP POLICY IF EXISTS "allow_all_store_status" ON store_status;
 DROP POLICY IF EXISTS "public_read_store_status" ON store_status;
 DROP POLICY IF EXISTS "public_update_store_status" ON store_status;
 DROP POLICY IF EXISTS "public_insert_store_status" ON store_status;
+DROP POLICY IF EXISTS "public_delete_store_status" ON store_status;
 
 DROP POLICY IF EXISTS "allow_all_feedback" ON feedback;
 DROP POLICY IF EXISTS "client_read_all_feedback" ON feedback;
 DROP POLICY IF EXISTS "client_update_feedback" ON feedback;
 DROP POLICY IF EXISTS "client_delete_feedback" ON feedback;
+DROP POLICY IF EXISTS "public_read_feedback" ON feedback;
+DROP POLICY IF EXISTS "public_insert_feedback" ON feedback;
+DROP POLICY IF EXISTS "public_update_feedback" ON feedback;
 DROP POLICY IF EXISTS "public_delete_feedback" ON feedback;
 
 DROP POLICY IF EXISTS "allow_all_gallery" ON gallery;
@@ -37,35 +95,28 @@ DROP POLICY IF EXISTS "public_insert_gallery" ON gallery;
 DROP POLICY IF EXISTS "public_update_gallery" ON gallery;
 DROP POLICY IF EXISTS "public_delete_gallery" ON gallery;
 
--- 3. PRODUCTS: Full read & write for website and author portal
+-- 4. Enable Full Real-Time Sync Policies (Allows Website & Author across all devices)
 CREATE POLICY "allow_all_products" ON products
-  FOR ALL
-  TO anon, authenticated
+  FOR ALL TO anon, authenticated
   USING (true)
   WITH CHECK (true);
 
--- 4. STORE STATUS: Full read & write for live open/close & crowd levels
 CREATE POLICY "allow_all_store_status" ON store_status
-  FOR ALL
-  TO anon, authenticated
+  FOR ALL TO anon, authenticated
   USING (true)
   WITH CHECK (true);
 
--- 5. FEEDBACK / REVIEWS: Allow customers to insert, all users to view, and author to manage
 CREATE POLICY "allow_all_feedback" ON feedback
-  FOR ALL
-  TO anon, authenticated
+  FOR ALL TO anon, authenticated
   USING (true)
   WITH CHECK (true);
 
--- 6. GALLERY: Full read & write for author photo uploads and customer views
 CREATE POLICY "allow_all_gallery" ON gallery
-  FOR ALL
-  TO anon, authenticated
+  FOR ALL TO anon, authenticated
   USING (true)
   WITH CHECK (true);
 
--- 7. Ensure publication includes tables for real-time WebSockets
+-- 5. Add Tables to Realtime Publication (Enables 0ms WebSockets across all devices)
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -97,7 +148,12 @@ BEGIN
   END IF;
 END $$;
 
--- 8. Seed all 4 menu varieties into products table
+-- 6. Seed Initial Store Status (if not exists)
+INSERT INTO store_status (is_open, crowd_level, last_updated)
+SELECT true, 'Moderate', now()
+WHERE NOT EXISTS (SELECT 1 FROM store_status);
+
+-- 7. Seed All 4 Menu Varieties into products table
 INSERT INTO products (slug, name, price, description, image_url, available, stock, featured, display_order)
 VALUES
   ('kachori', 'Regular Kachori', 40, 'Crispy, golden-fried puffed pastry stuffed with our classic spiced lentil and onion filling — served fresh with tangy house chutneys.', '/images/kachori.webp', true, 80, true, 1),
@@ -109,4 +165,7 @@ ON CONFLICT (slug) DO UPDATE SET
   description = EXCLUDED.description,
   image_url = CASE WHEN products.image_url IS NULL OR products.image_url = '' THEN EXCLUDED.image_url ELSE products.image_url END;
 
-
+-- 8. Seed Initial Gallery Images (if table is empty)
+INSERT INTO gallery (src, alt, category, caption, display_order)
+SELECT '/images/kachori.webp', 'Crispy signature Kachori served hot at Paras Kachoriwala', 'food', 'Signature Kachori', 1
+WHERE NOT EXISTS (SELECT 1 FROM gallery);
