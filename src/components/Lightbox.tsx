@@ -49,13 +49,24 @@ export default function Lightbox({ images, index, onClose, onNavigate }: Props) 
         img.src.toLowerCase().endsWith('.mp4') ||
         img.src.toLowerCase().endsWith('.webm') ||
         img.src.startsWith('data:video/') ? (
-          <video
-            src={img.src}
-            controls
-            autoPlay
-            playsInline
-            className="max-h-[75vh] max-w-full rounded-2xl shadow-2xl bg-black animate-scale-in"
-          />
+          <div className="relative max-h-[78vh] max-w-full flex flex-col items-center justify-center">
+            <video
+              key={img.src}
+              src={img.src}
+              controls
+              autoPlay
+              muted
+              playsInline
+              preload="auto"
+              className="max-h-[72vh] max-w-full rounded-2xl shadow-2xl bg-black animate-scale-in"
+            >
+              <source src={img.src} type="video/mp4" />
+              Your browser does not support playing this video.
+            </video>
+            <span className="mt-2 text-[11px] text-spice-100/70 flex items-center gap-1.5 bg-black/40 px-3 py-1 rounded-full backdrop-blur-sm border border-white/10">
+              🔊 Tap speaker icon on player to unmute audio
+            </span>
+          </div>
         ) : img.media_type === 'audio' ||
           img.src.toLowerCase().endsWith('.mp3') ||
           img.src.toLowerCase().endsWith('.wav') ||

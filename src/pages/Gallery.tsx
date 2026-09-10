@@ -214,12 +214,12 @@ export default function Gallery() {
                     </div>
                   )}
 
-                  <div className="absolute inset-0 bg-gradient-to-t from-charcoal-950/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-                  <div className="absolute bottom-3 left-3 right-3 text-left opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="text-[11px] font-bold text-marigold-300 uppercase tracking-wider block">
+                  <div className="absolute inset-0 bg-gradient-to-t from-charcoal-950/85 via-charcoal-950/20 to-transparent opacity-80 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute bottom-2.5 left-2.5 right-2.5 sm:bottom-3 sm:left-3 sm:right-3 text-left opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                    <span className="text-[10px] sm:text-[11px] font-bold text-marigold-300 uppercase tracking-wider block">
                       {getCategoryLabel(img.category)}
                     </span>
-                    <span className="text-sm font-semibold text-white block mt-0.5 truncate">
+                    <span className="text-xs sm:text-sm font-semibold text-white block mt-0.5 truncate">
                       {img.caption || img.alt}
                     </span>
                   </div>

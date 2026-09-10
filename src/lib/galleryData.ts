@@ -2,8 +2,8 @@ import type { GalleryImage } from './types';
 
 export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
   {
-    id: 'g1',
-    src: '/images/kachori.webp',
+    id: 'a0000000-0000-0000-0000-000000000001',
+    src: './images/kachori.webp',
     alt: 'Fresh Kachori served at Paras Kachoriwala',
     category: 'food',
     caption: 'Signature Kachori',
@@ -11,8 +11,8 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-01T12:00:00Z').toISOString(),
   },
   {
-    id: 'g2',
-    src: '/images/bhel.webp',
+    id: 'a0000000-0000-0000-0000-000000000002',
+    src: './images/bhel.webp',
     alt: 'Fresh Bhel topped with sev and chutneys',
     category: 'food',
     caption: 'Fresh Bhel',
@@ -20,8 +20,8 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-02T12:00:00Z').toISOString(),
   },
   {
-    id: 'g3',
-    src: '/images/lari_pic.webp',
+    id: 'a0000000-0000-0000-0000-000000000003',
+    src: './images/lari_pic.webp',
     alt: 'Paras Kachoriwala food cart at night',
     category: 'stall',
     caption: 'Our Food Cart',
@@ -29,8 +29,8 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-03T12:00:00Z').toISOString(),
   },
   {
-    id: 'g4',
-    src: '/images/bhel.webp',
+    id: 'a0000000-0000-0000-0000-000000000004',
+    src: './images/bhel.webp',
     alt: 'Close-up of crunchy Bhel ingredients',
     category: 'food',
     caption: 'Full of Flavour',
@@ -38,8 +38,8 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-04T12:00:00Z').toISOString(),
   },
   {
-    id: 'g5',
-    src: '/images/kachori.webp',
+    id: 'a0000000-0000-0000-0000-000000000005',
+    src: './images/kachori.webp',
     alt: 'Kachori prepared fresh for customers',
     category: 'food',
     caption: 'Made Fresh Daily',
@@ -47,8 +47,8 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-05T12:00:00Z').toISOString(),
   },
   {
-    id: 'g6',
-    src: '/images/lari_pic.webp',
+    id: 'a0000000-0000-0000-0000-000000000006',
+    src: './images/lari_pic.webp',
     alt: 'Customers enjoying fresh kachori at Paras Kachoriwala',
     category: 'customers',
     caption: 'Customer Moments at Stall',
@@ -56,8 +56,8 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-06T12:00:00Z').toISOString(),
   },
   {
-    id: 'g-video-1',
-    src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+    id: 'a0000000-0000-0000-0000-000000000007',
+    src: 'https://www.w3schools.com/html/mov_bbb.mp4',
     alt: 'Paras Kachoriwala Stall & Live Food Preparation Video',
     category: 'videos',
     media_type: 'video',

@@ -58,7 +58,7 @@ export default function Directions() {
               aria-label="Open the exact Paras Kachoriwala location in Google Maps"
             >
               <img
-                src="/images/lari_pic.webp"
+                src="./images/lari_pic.webp"
                 alt="Paras Kachoriwala food cart at the shop location"
                 className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
                 loading="eager"

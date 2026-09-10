@@ -21,7 +21,7 @@ const DEFAULT_PRODUCTS: Product[] = [
     price: 40,
     description:
       'Crispy, golden-fried puffed pastry stuffed with our classic spiced lentil and onion filling — served fresh with tangy house chutneys.',
-    image_url: '/images/kachori.webp',
+    image_url: './images/kachori.webp',
     available: true,
     stock: 80,
     featured: true,
@@ -34,7 +34,7 @@ const DEFAULT_PRODUCTS: Product[] = [
     price: 40,
     description:
       'Prepared strictly per Jain dietary traditions without onion or garlic — packed with rich authentic spices and served with fresh sweet and spicy chutneys.',
-    image_url: '',
+    image_url: './images/kachori.webp',
     available: true,
     stock: 50,
     featured: false,
@@ -47,7 +47,7 @@ const DEFAULT_PRODUCTS: Product[] = [
     price: 40,
     description:
       'Pure satvik preparation crafted strictly without onion or garlic, following Swaminarayan dietary guidelines with fragrant spices and fresh chutneys.',
-    image_url: '',
+    image_url: './images/kachori.webp',
     available: true,
     stock: 50,
     featured: false,
@@ -60,7 +60,7 @@ const DEFAULT_PRODUCTS: Product[] = [
     price: 50,
     description:
       'Light, crunchy puffed rice tossed with fresh tomatoes, onions, sev and our house chutneys — a burst of flavour in every bite.',
-    image_url: '/images/bhel.webp',
+    image_url: './images/bhel.webp',
     available: true,
     stock: 60,
     featured: false,
@@ -280,6 +280,27 @@ function markReviewDeleted(id: string): void {
     const deleted = getDeletedReviewIds();
     deleted.add(id);
     localStorage.setItem(STORAGE_DELETED_REVIEWS_KEY, JSON.stringify(Array.from(deleted)));
+  } catch {
+    /* ignore */
+  }
+}
+
+const STORAGE_DELETED_GALLERY_KEY = 'pk_deleted_gallery_ids_v3';
+
+function getDeletedGalleryIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_DELETED_GALLERY_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function markGalleryImageDeleted(id: string): void {
+  try {
+    const deleted = getDeletedGalleryIds();
+    deleted.add(id);
+    localStorage.setItem(STORAGE_DELETED_GALLERY_KEY, JSON.stringify(Array.from(deleted)));
   } catch {
     /* ignore */
   }
@@ -649,38 +670,42 @@ export function useGallery() {
       const result = await withDedupe<GalleryImage[]>(
         'sb:gallery',
         async () => {
-          try {
+            const deletedSet = getDeletedGalleryIds();
             const { data, error } = await withTimeout(() =>
               supabase
                 .from('gallery')
                 .select('*')
                 .order('display_order', { ascending: true })
             );
-            const currentLocal = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
-            if (error || !data || data.length === 0) {
-              return currentLocal;
-            }
-            // CRITICAL: Merge remote records with local items so uploaded videos/audios are NEVER lost!
-            const remoteFormatted = (data as GalleryImage[]).map(normalizeGalleryItem);
-            const remoteIds = new Set(remoteFormatted.map((r) => r.id));
-            const merged: GalleryImage[] = [...remoteFormatted];
-            currentLocal.forEach((item) => {
-              if (!remoteIds.has(item.id)) {
-                merged.unshift(item);
+
+            if (!error && data && data.length > 0) {
+              const remoteFormatted = (data as GalleryImage[])
+                .map(normalizeGalleryItem)
+                .filter((r) => !deletedSet.has(r.id));
+              const remoteIds = new Set(remoteFormatted.map((r) => r.id));
+              const currentLocal = (memoryGallery ?? getLocalGallery() ?? [])
+                .filter((r) => !deletedSet.has(r.id));
+
+              const merged: GalleryImage[] = [...remoteFormatted];
+              currentLocal.forEach((item) => {
+                if (!remoteIds.has(item.id) && !deletedSet.has(item.id)) {
+                  merged.push(item);
+                }
+              });
+
+              memoryGallery = merged;
+              try {
+                localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(merged));
+              } catch {
+                /* ignore */
               }
-            });
-            memoryGallery = merged;
-            try {
-              localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(merged));
-            } catch {
-              /* ignore */
+              void idbSet(STORAGE_GALLERY_KEY, merged);
+              return merged;
             }
-            void idbSet(STORAGE_GALLERY_KEY, merged);
-            return merged;
-          } catch {
-            const currentLocal = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+
+            const currentLocal = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES)
+              .filter((item) => !deletedSet.has(item.id));
             return currentLocal;
-          }
         },
         CACHE_TTL_MEDIUM
       );
@@ -1494,7 +1519,9 @@ export async function deleteProduct(
 export async function addGalleryImage(
   image: Omit<GalleryImage, 'id'>
 ): Promise<{ success: boolean; data?: GalleryImage; error?: string }> {
-  const newId = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const newId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : 'b0000000-0000-4000-8000-' + String(Date.now()).padStart(12, '0').slice(-12);
   const normalized = normalizeGalleryItem({
     id: newId,
     src: image.src,
@@ -1579,9 +1606,9 @@ export async function updateGalleryImage(
 }
 
 export async function deleteGalleryImage(id: string): Promise<{ success: boolean; error?: string }> {
-  const current = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
-  const updated = current.filter((img) => img.id !== id);
-  memoryGallery = updated;
+  markGalleryImageDeleted(id);
+  const current = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter((img) => img.id !== id);
+  memoryGallery = current;
 
   try {
     localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(updated));
