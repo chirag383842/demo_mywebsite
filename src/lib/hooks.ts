@@ -142,7 +142,7 @@ const DEFAULT_STORE_STATUS: StoreStatus = {
 
 const STORAGE_STATUS_KEY = 'pk_local_store_status_v3';
 const STORAGE_PRODUCTS_KEY = 'pk_local_products_v3';
-const STORAGE_GALLERY_KEY = 'pk_local_gallery_v4';
+const STORAGE_GALLERY_KEY = 'pk_gallery_master_v5';
 const STORAGE_FEEDBACK_KEY = 'pk_all_feedback_records_v3';
 const STORAGE_DELETED_REVIEWS_KEY = 'pk_deleted_review_ids_v3';
 
@@ -280,27 +280,6 @@ function markReviewDeleted(id: string): void {
     const deleted = getDeletedReviewIds();
     deleted.add(id);
     localStorage.setItem(STORAGE_DELETED_REVIEWS_KEY, JSON.stringify(Array.from(deleted)));
-  } catch {
-    /* ignore */
-  }
-}
-
-const STORAGE_DELETED_GALLERY_KEY = 'pk_deleted_gallery_ids_v3';
-
-function getDeletedGalleryIds(): Set<string> {
-  try {
-    const raw = localStorage.getItem(STORAGE_DELETED_GALLERY_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function markGalleryImageDeleted(id: string): void {
-  try {
-    const deleted = getDeletedGalleryIds();
-    deleted.add(id);
-    localStorage.setItem(STORAGE_DELETED_GALLERY_KEY, JSON.stringify(Array.from(deleted)));
   } catch {
     /* ignore */
   }
@@ -652,22 +631,18 @@ export function useStoreStatus() {
 export function useGallery() {
   const remoteLoadedRef = useRef(false);
   const [state, setState] = useState<AsyncState<GalleryImage[]>>(() => {
-    const deleted = getDeletedGalleryIds();
     const cached = getLocalGallery();
-    const initial = (cached ?? DEFAULT_GALLERY_IMAGES).filter((item) => !deleted.has(item.id));
-    return { data: initial, loading: false, error: null };
+    const initial = cached ?? DEFAULT_GALLERY_IMAGES;
+    return { data: initial, loading: !cached, error: null };
   });
 
-  // Async load from IndexedDB so uploaded videos/audios are never lost
+  // Async load from IndexedDB so uploaded media is preserved
   useEffect(() => {
     idbGet<GalleryImage[]>(STORAGE_GALLERY_KEY).then((idbGallery) => {
-      // If remote Supabase data already loaded, do NOT let stale IndexedDB overwrite it
       if (remoteLoadedRef.current) return;
       if (idbGallery && idbGallery.length > 0) {
-        const deleted = getDeletedGalleryIds();
-        const filtered = idbGallery.filter((item) => !deleted.has(item.id));
-        memoryGallery = filtered;
-        setState((prev) => ({ ...prev, data: filtered }));
+        memoryGallery = idbGallery;
+        setState((prev) => ({ ...prev, data: idbGallery, loading: false }));
       }
     });
   }, []);
@@ -677,35 +652,32 @@ export function useGallery() {
       const result = await withDedupe<GalleryImage[]>(
         'sb:gallery',
         async () => {
-            const deletedSet = getDeletedGalleryIds();
-            const { data, error } = await withTimeout(() =>
+          const { data, error } = await withTimeout(
+            () =>
               supabase
                 .from('gallery')
                 .select('*')
                 .order('display_order', { ascending: true }),
-              8000
-            );
+            10000
+          );
 
-            if (!error && Array.isArray(data)) {
-              remoteLoadedRef.current = true;
-              const remoteFormatted = (data as GalleryImage[])
-                .map(normalizeGalleryItem)
-                .filter((r) => !deletedSet.has(r.id));
+          if (!error && Array.isArray(data)) {
+            remoteLoadedRef.current = true;
+            const remoteFormatted = (data as GalleryImage[]).map(normalizeGalleryItem);
 
-              // Supabase is the true global source of truth across all customer devices and admin
-              memoryGallery = remoteFormatted;
-              try {
-                localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(remoteFormatted));
-              } catch {
-                /* ignore */
-              }
-              void idbSet(STORAGE_GALLERY_KEY, remoteFormatted);
-              return remoteFormatted;
+            // Supabase is the true global source of truth across all customer devices and admin
+            memoryGallery = remoteFormatted;
+            try {
+              localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(remoteFormatted));
+            } catch {
+              /* ignore */
             }
+            void idbSet(STORAGE_GALLERY_KEY, remoteFormatted);
+            return remoteFormatted;
+          }
 
-            const currentLocal = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES)
-              .filter((item) => !deletedSet.has(item.id));
-            return currentLocal;
+          const currentLocal = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+          return currentLocal;
         },
         CACHE_TTL_MEDIUM
       );
@@ -1611,7 +1583,6 @@ export async function updateGalleryImage(
 }
 
 export async function deleteGalleryImage(id: string): Promise<{ success: boolean; error?: string }> {
-  markGalleryImageDeleted(id);
   const current = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter((img) => img.id !== id);
   memoryGallery = current;
 
@@ -1623,11 +1594,11 @@ export async function deleteGalleryImage(id: string): Promise<{ success: boolean
   await idbSet(STORAGE_GALLERY_KEY, current);
 
   invalidateCache('sb:gallery');
-  broadcastRealtimeEvent('GALLERY_CHANGED');
+  broadcastRealtimeEvent('GALLERY_CHANGED', { deletedId: id });
   window.dispatchEvent(new Event('pk_gallery_changed'));
 
   try {
-    const { error } = await withTimeout(() => supabase.from('gallery').delete().eq('id', id), 8000);
+    const { error } = await withTimeout(() => supabase.from('gallery').delete().eq('id', id), 10000);
     if (error) {
       console.warn('Gallery delete error from supabase:', error.message);
     }
