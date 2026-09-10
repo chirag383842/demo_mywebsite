@@ -142,13 +142,13 @@ const DEFAULT_STORE_STATUS: StoreStatus = {
 
 const STORAGE_STATUS_KEY = 'pk_local_store_status_v3';
 const STORAGE_PRODUCTS_KEY = 'pk_local_products_v3';
-const STORAGE_GALLERY_KEY = 'pk_local_gallery_v3';
+const STORAGE_GALLERY_KEY = 'pk_local_gallery_v4';
 const STORAGE_FEEDBACK_KEY = 'pk_all_feedback_records_v3';
 const STORAGE_DELETED_REVIEWS_KEY = 'pk_deleted_review_ids_v3';
 
 const CACHE_TTL_SHORT = 10_000;
 const CACHE_TTL_MEDIUM = 20_000;
-const REQUEST_TIMEOUT_MS = 2_500;
+const REQUEST_TIMEOUT_MS = 8_000;
 
 // Cross-tab Real-Time Broadcast Channel
 let syncBroadcastChannel: BroadcastChannel | null = null;
@@ -650,6 +650,7 @@ export function useStoreStatus() {
 // 3. GALLERY HOOK
 // ----------------------------------------------------
 export function useGallery() {
+  const remoteLoadedRef = useRef(false);
   const [state, setState] = useState<AsyncState<GalleryImage[]>>(() => {
     const deleted = getDeletedGalleryIds();
     const cached = getLocalGallery();
@@ -660,6 +661,8 @@ export function useGallery() {
   // Async load from IndexedDB so uploaded videos/audios are never lost
   useEffect(() => {
     idbGet<GalleryImage[]>(STORAGE_GALLERY_KEY).then((idbGallery) => {
+      // If remote Supabase data already loaded, do NOT let stale IndexedDB overwrite it
+      if (remoteLoadedRef.current) return;
       if (idbGallery && idbGallery.length > 0) {
         const deleted = getDeletedGalleryIds();
         const filtered = idbGallery.filter((item) => !deleted.has(item.id));
@@ -679,10 +682,12 @@ export function useGallery() {
               supabase
                 .from('gallery')
                 .select('*')
-                .order('display_order', { ascending: true })
+                .order('display_order', { ascending: true }),
+              8000
             );
 
-            if (!error && data && data.length > 0) {
+            if (!error && Array.isArray(data)) {
+              remoteLoadedRef.current = true;
               const remoteFormatted = (data as GalleryImage[])
                 .map(normalizeGalleryItem)
                 .filter((r) => !deletedSet.has(r.id));
@@ -1548,6 +1553,7 @@ export async function addGalleryImage(
       supabase
         .from('gallery')
         .insert({
+          id: newId,
           src: normalized.src,
           alt: normalized.alt,
           category: normalized.category,
@@ -1556,13 +1562,13 @@ export async function addGalleryImage(
         })
         .select()
         .maybeSingle(),
-      2500
+      15000
     );
 
     if (error) {
       console.warn('Supabase gallery insert notice:', error.message);
     }
-    if (data) {
+    if (data && data.id) {
       normalized.id = data.id;
     }
   } catch (err) {
@@ -1592,7 +1598,11 @@ export async function updateGalleryImage(
   window.dispatchEvent(new Event('pk_gallery_changed'));
 
   try {
-    await withTimeout(() => supabase.from('gallery').update(updates).eq('id', id));
+    // Supabase gallery table does not have a media_type column
+    const { media_type, ...supabaseUpdates } = updates as Record<string, unknown>;
+    if (Object.keys(supabaseUpdates).length > 0) {
+      await withTimeout(() => supabase.from('gallery').update(supabaseUpdates).eq('id', id), 8000);
+    }
   } catch (err) {
     console.warn('Gallery update notice:', err);
   }
@@ -1606,18 +1616,21 @@ export async function deleteGalleryImage(id: string): Promise<{ success: boolean
   memoryGallery = current;
 
   try {
-    localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(updated));
+    localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(current));
   } catch {
     /* ignore */
   }
-  await idbSet(STORAGE_GALLERY_KEY, updated);
+  await idbSet(STORAGE_GALLERY_KEY, current);
 
   invalidateCache('sb:gallery');
   broadcastRealtimeEvent('GALLERY_CHANGED');
   window.dispatchEvent(new Event('pk_gallery_changed'));
 
   try {
-    await withTimeout(() => supabase.from('gallery').delete().eq('id', id));
+    const { error } = await withTimeout(() => supabase.from('gallery').delete().eq('id', id), 8000);
+    if (error) {
+      console.warn('Gallery delete error from supabase:', error.message);
+    }
   } catch (err) {
     console.warn('Gallery delete notice:', err);
   }

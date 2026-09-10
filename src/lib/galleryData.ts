@@ -11,21 +11,12 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     created_at: new Date('2026-08-01T12:00:00Z').toISOString(),
   },
   {
-    id: 'a0000000-0000-0000-0000-000000000002',
-    src: './images/bhel.webp',
-    alt: 'Fresh Bhel topped with sev and chutneys',
-    category: 'food',
-    caption: 'Fresh Bhel',
-    display_order: 2,
-    created_at: new Date('2026-08-02T12:00:00Z').toISOString(),
-  },
-  {
     id: 'a0000000-0000-0000-0000-000000000003',
     src: './images/lari_pic.webp',
     alt: 'Paras Kachoriwala food cart at night',
     category: 'stall',
     caption: 'Our Food Cart',
-    display_order: 3,
+    display_order: 2,
     created_at: new Date('2026-08-03T12:00:00Z').toISOString(),
   },
   {
@@ -34,7 +25,7 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     alt: 'Close-up of crunchy Bhel ingredients',
     category: 'food',
     caption: 'Full of Flavour',
-    display_order: 4,
+    display_order: 3,
     created_at: new Date('2026-08-04T12:00:00Z').toISOString(),
   },
   {
@@ -43,7 +34,7 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     alt: 'Kachori prepared fresh for customers',
     category: 'food',
     caption: 'Made Fresh Daily',
-    display_order: 5,
+    display_order: 4,
     created_at: new Date('2026-08-05T12:00:00Z').toISOString(),
   },
   {
@@ -52,7 +43,7 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     alt: 'Customers enjoying fresh kachori at Paras Kachoriwala',
     category: 'customers',
     caption: 'Customer Moments at Stall',
-    display_order: 6,
+    display_order: 5,
     created_at: new Date('2026-08-06T12:00:00Z').toISOString(),
   },
   {
@@ -62,7 +53,7 @@ export const DEFAULT_GALLERY_IMAGES: GalleryImage[] = [
     category: 'videos',
     media_type: 'video',
     caption: 'Live Stall Preparation & Ambience Video',
-    display_order: 7,
+    display_order: 6,
     created_at: new Date('2026-08-07T12:00:00Z').toISOString(),
   },
 ];
