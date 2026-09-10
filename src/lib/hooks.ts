@@ -651,16 +651,20 @@ export function useStoreStatus() {
 // ----------------------------------------------------
 export function useGallery() {
   const [state, setState] = useState<AsyncState<GalleryImage[]>>(() => {
+    const deleted = getDeletedGalleryIds();
     const cached = getLocalGallery();
-    return { data: cached ?? DEFAULT_GALLERY_IMAGES, loading: false, error: null };
+    const initial = (cached ?? DEFAULT_GALLERY_IMAGES).filter((item) => !deleted.has(item.id));
+    return { data: initial, loading: false, error: null };
   });
 
   // Async load from IndexedDB so uploaded videos/audios are never lost
   useEffect(() => {
     idbGet<GalleryImage[]>(STORAGE_GALLERY_KEY).then((idbGallery) => {
       if (idbGallery && idbGallery.length > 0) {
-        memoryGallery = idbGallery;
-        setState((prev) => ({ ...prev, data: idbGallery }));
+        const deleted = getDeletedGalleryIds();
+        const filtered = idbGallery.filter((item) => !deleted.has(item.id));
+        memoryGallery = filtered;
+        setState((prev) => ({ ...prev, data: filtered }));
       }
     });
   }, []);
@@ -682,25 +686,16 @@ export function useGallery() {
               const remoteFormatted = (data as GalleryImage[])
                 .map(normalizeGalleryItem)
                 .filter((r) => !deletedSet.has(r.id));
-              const remoteIds = new Set(remoteFormatted.map((r) => r.id));
-              const currentLocal = (memoryGallery ?? getLocalGallery() ?? [])
-                .filter((r) => !deletedSet.has(r.id));
 
-              const merged: GalleryImage[] = [...remoteFormatted];
-              currentLocal.forEach((item) => {
-                if (!remoteIds.has(item.id) && !deletedSet.has(item.id)) {
-                  merged.push(item);
-                }
-              });
-
-              memoryGallery = merged;
+              // Supabase is the true global source of truth across all customer devices and admin
+              memoryGallery = remoteFormatted;
               try {
-                localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(merged));
+                localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(remoteFormatted));
               } catch {
                 /* ignore */
               }
-              void idbSet(STORAGE_GALLERY_KEY, merged);
-              return merged;
+              void idbSet(STORAGE_GALLERY_KEY, remoteFormatted);
+              return remoteFormatted;
             }
 
             const currentLocal = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES)
