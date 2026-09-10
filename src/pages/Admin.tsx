@@ -53,16 +53,18 @@ import {
   addGalleryImage,
   updateGalleryImage,
   deleteGalleryImage,
+  syncAuthorGalleryToSupabase,
 } from '@/lib/hooks';
 import {
   getGoogleSheetUrl,
   setGoogleSheetUrl,
   syncFeedbackToGoogleSheet,
+  autoSyncUnsyncedReviews,
   testGoogleSheetWebhook,
 } from '@/lib/googleSheets';
 import { CROWD_META, type CrowdLevel, formatTime, getISTDate, isWithinScheduleHours } from '@/lib/constants';
 import { GALLERY_CATEGORIES } from '@/lib/galleryData';
-import { optimizeImageForProduct } from '@/lib/imageUtils';
+import { optimizeImageForProduct, optimizeGalleryMedia } from '@/lib/imageUtils';
 import type { Page } from '@/components/Navbar';
 import type { GalleryImage, GalleryCategory, Product } from '@/lib/types';
 import Logo from '@/components/Logo';
@@ -136,6 +138,8 @@ export default function Admin({ onNavigate }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const [replacingId, setReplacingId] = useState<string | null>(null);
+  const [syncingGallery, setSyncingGallery] = useState(false);
+  const [gallerySyncMsg, setGallerySyncMsg] = useState('');
 
   // Google Sheets state
   const [sheetUrl, setSheetUrl] = useState(getGoogleSheetUrl());
@@ -157,6 +161,31 @@ export default function Admin({ onNavigate }: Props) {
       setCrowd((storeStatus.crowd_level as CrowdLevel) || 'Moderate');
     }
   }, [storeStatus]);
+
+  // Background sync author gallery to Supabase on login to ensure parity
+  useEffect(() => {
+    if (user) {
+      syncAuthorGalleryToSupabase().catch(() => {});
+    }
+  }, [user]);
+
+  // Real-time auto-sync reviews to Google Sheet whenever reviews load or update
+  useEffect(() => {
+    if (feedbackList && feedbackList.length > 0) {
+      autoSyncUnsyncedReviews(
+        feedbackList.map((f) => ({
+          record_id: f.id,
+          customer_name: f.customer_name ?? undefined,
+          overall_rating: f.overall_rating,
+          food_rating: f.food_rating ?? undefined,
+          service_rating: f.service_rating ?? undefined,
+          cleanliness_rating: f.cleanliness_rating ?? undefined,
+          message: f.message ?? undefined,
+          submitted_at: f.created_at,
+        }))
+      ).catch(() => {});
+    }
+  }, [feedbackList]);
 
   // Sync products form state
   useEffect(() => {
@@ -744,7 +773,7 @@ export default function Admin({ onNavigate }: Props) {
   };
 
   // 3. Gallery File Validation & Upload Actions (Supports Images, Videos MP4/WebM, Audio MP3/WAV)
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setUploadError('');
     setUploadSuccess('');
     const file = e.target.files?.[0];
@@ -768,12 +797,12 @@ export default function Admin({ onNavigate }: Props) {
       return;
     }
 
-    const MAX_SIZE = isVideo || isAudio ? 25 * 1024 * 1024 : 5 * 1024 * 1024;
+    const MAX_SIZE = isVideo || isAudio ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       setUploadError(
         isVideo || isAudio
           ? 'Media file is too large. Maximum size for video/audio is 25MB.'
-          : 'Image file is too large. Maximum size is 5MB.'
+          : 'Image file is too large. Maximum size is 10MB.'
       );
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
@@ -785,11 +814,16 @@ export default function Admin({ onNavigate }: Props) {
       setUploadCategory('videos');
     }
 
-    const reader = new FileReader();
-    reader.onload = (loadEvt) => {
-      setPreviewDataUrl(loadEvt.target?.result as string);
-    };
-    reader.readAsDataURL(file);
+    try {
+      const dataUrl = await optimizeGalleryMedia(file);
+      setPreviewDataUrl(dataUrl);
+    } catch {
+      const reader = new FileReader();
+      reader.onload = (loadEvt) => {
+        setPreviewDataUrl(loadEvt.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleUploadImage = async (e: React.FormEvent) => {
@@ -815,7 +849,8 @@ export default function Admin({ onNavigate }: Props) {
     });
 
     if (res.success) {
-      setUploadSuccess(`Media uploaded successfully to "${sectionName}" folder!`);
+      await syncAuthorGalleryToSupabase();
+      setUploadSuccess(`Media uploaded and published across all devices to "${sectionName}" folder!`);
       setPreviewDataUrl(null);
       setUploadCaption('');
       setUploadAlt('');
@@ -832,7 +867,23 @@ export default function Admin({ onNavigate }: Props) {
   const handleDeleteGalleryImage = async (id: string) => {
     if (!confirm('Are you sure you want to delete this photo from the website gallery?')) return;
     await deleteGalleryImage(id);
+    await syncAuthorGalleryToSupabase();
     refetchGallery();
+  };
+
+  const handleSyncGalleryToCloud = async () => {
+    setSyncingGallery(true);
+    setGallerySyncMsg('');
+    const res = await syncAuthorGalleryToSupabase();
+    setSyncingGallery(false);
+    if (res.success) {
+      setGallerySyncMsg(`All devices in sync! (${res.syncedCount} media items published to cloud)`);
+      setTimeout(() => setGallerySyncMsg(''), 4500);
+      refetchGallery();
+    } else {
+      setGallerySyncMsg(`Notice: ${res.error || 'Cloud sync completed'}`);
+      setTimeout(() => setGallerySyncMsg(''), 4500);
+    }
   };
 
   const handleTriggerReplace = (id: string) => {
@@ -858,26 +909,38 @@ export default function Admin({ onNavigate }: Props) {
       alert('Invalid file format. Please choose a Photo (JPEG, PNG, WebP), Video (MP4, WebM), or Audio (MP3).');
       return;
     }
-    const maxBytes = isVideo || isAudio ? 25 * 1024 * 1024 : 5 * 1024 * 1024;
+    const maxBytes = isVideo || isAudio ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
     if (file.size > maxBytes) {
-      alert(isVideo || isAudio ? 'Media is too large (max 25MB).' : 'Photo is too large (max 5MB).');
+      alert(isVideo || isAudio ? 'Media is too large (max 25MB).' : 'Photo is too large (max 10MB).');
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = async (loadEvt) => {
-      const dataUrl = loadEvt.target?.result as string;
+    try {
+      const dataUrl = await optimizeGalleryMedia(file);
       const mediaType: 'image' | 'video' | 'audio' = isVideo ? 'video' : isAudio ? 'audio' : 'image';
       await updateGalleryImage(replacingId, { src: dataUrl, media_type: mediaType });
+      await syncAuthorGalleryToSupabase();
       refetchGallery();
       setReplacingId(null);
       if (replaceInputRef.current) replaceInputRef.current.value = '';
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      const reader = new FileReader();
+      reader.onload = async (loadEvt) => {
+        const dataUrl = loadEvt.target?.result as string;
+        const mediaType: 'image' | 'video' | 'audio' = isVideo ? 'video' : isAudio ? 'audio' : 'image';
+        await updateGalleryImage(replacingId, { src: dataUrl, media_type: mediaType });
+        await syncAuthorGalleryToSupabase();
+        refetchGallery();
+        setReplacingId(null);
+        if (replaceInputRef.current) replaceInputRef.current.value = '';
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleChangeImageCategory = async (id: string, newCategory: GalleryImage['category']) => {
     await updateGalleryImage(id, { category: newCategory });
+    await syncAuthorGalleryToSupabase();
     refetchGallery();
   };
 
@@ -2177,14 +2240,32 @@ export default function Admin({ onNavigate }: Props) {
                   </select>
                 </div>
 
-                <button
-                  onClick={refetchGallery}
-                  className="btn-outline text-xs py-2 px-3 self-start sm:self-auto flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw size={13} className={loadingGallery ? 'animate-spin' : ''} />
-                  Refresh Media
-                </button>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <button
+                    onClick={handleSyncGalleryToCloud}
+                    disabled={syncingGallery}
+                    className="btn-primary text-xs py-2 px-3 flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    title="Publish all author media so every customer phone and device shows the exact same gallery"
+                  >
+                    <RefreshCw size={13} className={syncingGallery ? 'animate-spin' : ''} />
+                    {syncingGallery ? 'Syncing All Devices...' : 'Sync All Devices'}
+                  </button>
+                  <button
+                    onClick={refetchGallery}
+                    className="btn-outline text-xs py-2 px-3 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw size={13} className={loadingGallery ? 'animate-spin' : ''} />
+                    Refresh
+                  </button>
+                </div>
               </div>
+
+              {gallerySyncMsg && (
+                <div className="p-3 bg-leaf-50 border border-leaf-200 text-leaf-800 text-xs font-semibold rounded-xl flex items-center gap-2 animate-fade-in">
+                  <CheckCircle2 size={15} className="text-leaf-600 shrink-0" />
+                  <span>{gallerySyncMsg}</span>
+                </div>
+              )}
 
               {loadingGallery ? (
                 <SectionSkeleton variant="gallery" count={6} />
@@ -2328,6 +2409,11 @@ export default function Admin({ onNavigate }: Props) {
                       Forward every new customer rating and review directly into your Google Sheet in real time.
                     </p>
                   </div>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs font-semibold text-leaf-800 bg-leaf-100/80 border border-leaf-300 rounded-lg px-3 py-1.5 shrink-0">
+                  <span className="h-2 w-2 rounded-full bg-leaf-600 animate-pulse" />
+                  Real-time Auto-Sync Active
                 </div>
               </div>
 

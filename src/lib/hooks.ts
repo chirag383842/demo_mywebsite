@@ -2,10 +2,10 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from './supabase';
 import type { Product, StoreStatus, Review, Feedback, GalleryImage } from './types';
 import { DEFAULT_GALLERY_IMAGES } from './galleryData';
-import { sendFeedbackToGoogleSheet } from './googleSheets';
+import { sendFeedbackToGoogleSheet, autoSyncUnsyncedReviews } from './googleSheets';
 import { calculateStoreStatus } from './constants';
 import { withDedupe, invalidateCache } from './requestCache';
-import { idbGet, idbSet } from './mediaStorage';
+import { idbGet, idbSet, idbDelete } from './mediaStorage';
 
 export type AsyncState<T> = {
   data: T | null;
@@ -142,9 +142,39 @@ const DEFAULT_STORE_STATUS: StoreStatus = {
 
 const STORAGE_STATUS_KEY = 'pk_local_store_status_v3';
 const STORAGE_PRODUCTS_KEY = 'pk_local_products_v3';
-const STORAGE_GALLERY_KEY = 'pk_gallery_master_v5';
+const STORAGE_GALLERY_KEY = 'pk_gallery_synced_v8';
+const STORAGE_DELETED_GALLERY_KEY = 'pk_deleted_gallery_v8';
 const STORAGE_FEEDBACK_KEY = 'pk_all_feedback_records_v3';
 const STORAGE_DELETED_REVIEWS_KEY = 'pk_deleted_review_ids_v3';
+
+// Actively purge all legacy cache keys from earlier app builds across all customer & admin devices
+const LEGACY_STORAGE_KEYS = [
+  'pk_local_gallery',
+  'pk_local_gallery_v2',
+  'pk_local_gallery_v3',
+  'pk_local_gallery_v4',
+  'pk_gallery_master_v5',
+  'pk_gallery_master_v6',
+  'pk_deleted_gallery_ids_v1',
+  'pk_deleted_gallery_ids_v2',
+  'pk_deleted_gallery_ids_v3',
+  'pk_deleted_gallery_ids_v4',
+];
+
+if (typeof window !== 'undefined') {
+  try {
+    LEGACY_STORAGE_KEYS.forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        /* ignore */
+      }
+      void idbDelete(k);
+    });
+  } catch {
+    /* ignore */
+  }
+}
 
 const CACHE_TTL_SHORT = 10_000;
 const CACHE_TTL_MEDIUM = 20_000;
@@ -280,6 +310,26 @@ function markReviewDeleted(id: string): void {
     const deleted = getDeletedReviewIds();
     deleted.add(id);
     localStorage.setItem(STORAGE_DELETED_REVIEWS_KEY, JSON.stringify(Array.from(deleted)));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getDeletedGalleryIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_DELETED_GALLERY_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function markGalleryImageDeleted(id: string): void {
+  if (!id) return;
+  try {
+    const deleted = getDeletedGalleryIds();
+    deleted.add(id);
+    localStorage.setItem(STORAGE_DELETED_GALLERY_KEY, JSON.stringify(Array.from(deleted)));
   } catch {
     /* ignore */
   }
@@ -631,8 +681,9 @@ export function useStoreStatus() {
 export function useGallery() {
   const remoteLoadedRef = useRef(false);
   const [state, setState] = useState<AsyncState<GalleryImage[]>>(() => {
+    const deleted = getDeletedGalleryIds();
     const cached = getLocalGallery();
-    const initial = cached ?? DEFAULT_GALLERY_IMAGES;
+    const initial = (cached ?? DEFAULT_GALLERY_IMAGES).filter((img) => !deleted.has(img.id));
     return { data: initial, loading: !cached, error: null };
   });
 
@@ -641,8 +692,10 @@ export function useGallery() {
     idbGet<GalleryImage[]>(STORAGE_GALLERY_KEY).then((idbGallery) => {
       if (remoteLoadedRef.current) return;
       if (idbGallery && idbGallery.length > 0) {
-        memoryGallery = idbGallery;
-        setState((prev) => ({ ...prev, data: idbGallery, loading: false }));
+        const deleted = getDeletedGalleryIds();
+        const filtered = idbGallery.filter((img) => !deleted.has(img.id));
+        memoryGallery = filtered;
+        setState((prev) => ({ ...prev, data: filtered, loading: false }));
       }
     });
   }, []);
@@ -652,6 +705,7 @@ export function useGallery() {
       const result = await withDedupe<GalleryImage[]>(
         'sb:gallery',
         async () => {
+          const deleted = getDeletedGalleryIds();
           const { data, error } = await withTimeout(
             () =>
               supabase
@@ -663,7 +717,9 @@ export function useGallery() {
 
           if (!error && Array.isArray(data)) {
             remoteLoadedRef.current = true;
-            const remoteFormatted = (data as GalleryImage[]).map(normalizeGalleryItem);
+            const remoteFormatted = (data as GalleryImage[])
+              .map(normalizeGalleryItem)
+              .filter((img) => !deleted.has(img.id));
 
             // Supabase is the true global source of truth across all customer devices and admin
             memoryGallery = remoteFormatted;
@@ -676,16 +732,21 @@ export function useGallery() {
             return remoteFormatted;
           }
 
-          const currentLocal = memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES;
+          const currentLocal = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter(
+            (img) => !deleted.has(img.id)
+          );
           return currentLocal;
         },
         CACHE_TTL_MEDIUM
       );
       setState({ data: result, loading: false, error: null });
     } catch (err) {
-      const cached = memoryGallery ?? getLocalGallery();
+      const deleted = getDeletedGalleryIds();
+      const cached = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter(
+        (img) => !deleted.has(img.id)
+      );
       setState({
-        data: cached ?? DEFAULT_GALLERY_IMAGES,
+        data: cached,
         loading: false,
         error: toErrMsg(err, 'Unable to load gallery.'),
       });
@@ -730,9 +791,10 @@ export function useGallery() {
       channel = null;
     }
 
+    // 15-second periodic sync to mirror author updates across customer devices
     const pollInterval = window.setInterval(() => {
       fetchGallery();
-    }, 30_000);
+    }, 15_000);
 
     return () => {
       window.clearInterval(pollInterval);
@@ -954,6 +1016,20 @@ export function useFeedbackList() {
 
       saveLocalFeedbackList(list);
       setState({ data: list, loading: false, error: null });
+
+      // Automatically store any unsynced reviews into Google Sheet in real time
+      void autoSyncUnsyncedReviews(
+        list.map((f) => ({
+          record_id: f.id,
+          customer_name: f.customer_name ?? undefined,
+          overall_rating: f.overall_rating,
+          food_rating: f.food_rating ?? undefined,
+          service_rating: f.service_rating ?? undefined,
+          cleanliness_rating: f.cleanliness_rating ?? undefined,
+          message: f.message ?? undefined,
+          submitted_at: f.created_at,
+        }))
+      );
     } catch (err) {
       const localData = getLocalFeedbackList();
       const deletedIds = getDeletedReviewIds();
@@ -1130,16 +1206,20 @@ export async function submitFeedback(payload: FeedbackPayload): Promise<{ succes
     console.warn('Supabase feedback insert notice:', err);
   }
 
-  // 3. Send to Google Sheets webhook in real-time
-  void sendFeedbackToGoogleSheet({
-    record_id: newRecord.id,
-    customer_name: customerName,
-    overall_rating: overallRating,
-    food_rating: payload.food_rating,
-    service_rating: payload.service_rating,
-    cleanliness_rating: payload.cleanliness_rating,
-    message,
-  });
+  // 3. Send to Google Sheets webhook in real-time (awaited to guarantee delivery)
+  try {
+    await sendFeedbackToGoogleSheet({
+      record_id: newRecord.id,
+      customer_name: customerName,
+      overall_rating: overallRating,
+      food_rating: payload.food_rating,
+      service_rating: payload.service_rating,
+      cleanliness_rating: payload.cleanliness_rating,
+      message,
+    });
+  } catch (sheetErr) {
+    console.warn('Google Sheets delivery notice:', sheetErr);
+  }
 
   // 4. Broadcast real-time events across all tabs/windows
   invalidateCache('sb:reviews');
@@ -1583,7 +1663,11 @@ export async function updateGalleryImage(
 }
 
 export async function deleteGalleryImage(id: string): Promise<{ success: boolean; error?: string }> {
-  const current = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter((img) => img.id !== id);
+  markGalleryImageDeleted(id);
+  const deleted = getDeletedGalleryIds();
+  const current = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter(
+    (img) => img.id !== id && !deleted.has(img.id)
+  );
   memoryGallery = current;
 
   try {
@@ -1607,6 +1691,73 @@ export async function deleteGalleryImage(id: string): Promise<{ success: boolean
   }
 
   return { success: true };
+}
+
+/**
+ * Ensures the author's local gallery state is 100% mirrored in Supabase.
+ * Any deleted items on the author device are pruned from Supabase,
+ * and any new/updated items are persisted to Supabase so every device matches.
+ */
+export async function syncAuthorGalleryToSupabase(): Promise<{
+  success: boolean;
+  syncedCount: number;
+  error?: string;
+}> {
+  try {
+    const deletedIds = getDeletedGalleryIds();
+    const localItems = (memoryGallery ?? getLocalGallery() ?? DEFAULT_GALLERY_IMAGES).filter(
+      (img) => !deletedIds.has(img.id)
+    );
+
+    // 1. Fetch remote items
+    const { data: remoteRows, error: fetchErr } = await withTimeout(() =>
+      supabase.from('gallery').select('*'),
+      10000
+    );
+
+    if (fetchErr) {
+      return { success: false, syncedCount: 0, error: fetchErr.message };
+    }
+
+    const remoteItems = (remoteRows || []) as GalleryImage[];
+    const localMap = new Map(localItems.map((img) => [img.id, img]));
+
+    // 2. Remove remote items that were deleted on author device or are no longer in author gallery
+    for (const r of remoteItems) {
+      if (deletedIds.has(r.id) || !localMap.has(r.id)) {
+        await withTimeout(() => supabase.from('gallery').delete().eq('id', r.id), 8000).catch(() => {});
+      }
+    }
+
+    // 3. Upsert author items into Supabase
+    let synced = 0;
+    for (const local of localItems) {
+      const payload: Record<string, unknown> = {
+        id: local.id,
+        src: local.src,
+        alt: local.alt || 'Paras Kachoriwala Media',
+        category: local.category || 'food',
+        caption: local.caption || '',
+        display_order: local.display_order ?? 0,
+      };
+
+      const existingRemote = remoteItems.find((r) => r.id === local.id);
+      if (existingRemote) {
+        await withTimeout(() => supabase.from('gallery').update(payload).eq('id', local.id), 8000).catch(() => {});
+      } else {
+        await withTimeout(() => supabase.from('gallery').insert(payload), 8000).catch(() => {});
+      }
+      synced++;
+    }
+
+    invalidateCache('sb:gallery');
+    broadcastRealtimeEvent('GALLERY_CHANGED');
+    window.dispatchEvent(new Event('pk_gallery_changed'));
+
+    return { success: true, syncedCount: synced };
+  } catch (err) {
+    return { success: false, syncedCount: 0, error: toErrMsg(err, 'Cloud sync failed') };
+  }
 }
 
 // ----------------------------------------------------

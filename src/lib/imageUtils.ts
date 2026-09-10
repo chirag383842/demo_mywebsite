@@ -63,3 +63,25 @@ export async function optimizeImageForProduct(
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * Optimizes gallery media files.
+ * Images are compressed to max 1280px WebP/JPEG (~60-90KB) for instantaneous multi-device sync.
+ * Non-image media (video/audio) are read as standard DataURLs.
+ */
+export async function optimizeGalleryMedia(file: File): Promise<string> {
+  if (file.type.startsWith('image/')) {
+    try {
+      return await optimizeImageForProduct(file, 1280, 0.82);
+    } catch {
+      // Fallback to raw data url if canvas processing encounters an issue
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.onload = (e) => resolve((e.target?.result as string) || '');
+    reader.readAsDataURL(file);
+  });
+}

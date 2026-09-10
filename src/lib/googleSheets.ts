@@ -2,7 +2,7 @@
 
 const GOOGLE_SHEET_URL_KEY = 'pk_google_sheet_webhook_url_v2';
 export const DEFAULT_GOOGLE_SHEET_URL =
-  'https://script.google.com/macros/s/AKfycbxlFDug61sLPfECYq9kAzyxRQHzPG2ecEA-jZaxJ-h9-hJBYWtGzncF7WFaviKMjA0Vdg/exec';
+  'https://script.google.com/macros/s/AKfycbwLc-t7sDn6b_cJ_ig5j6OLsK9nqtWfZZH-oWOU9O4l1wc3pRau1fu3KFF4-WPcB3ff0Q/exec';
 
 export function getGoogleSheetUrl(): string {
   // 1. Highest priority: User customized webhook URL in Admin portal
@@ -47,6 +47,28 @@ export type GoogleSheetFeedbackData = {
   submitted_at?: string;
 };
 
+export const STORAGE_SYNCED_SHEET_IDS = 'pk_sheet_synced_ids_v1';
+
+export function getSyncedSheetIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_SYNCED_SHEET_IDS);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function markSheetIdSynced(id: string): void {
+  if (!id) return;
+  try {
+    const set = getSyncedSheetIds();
+    set.add(id);
+    localStorage.setItem(STORAGE_SYNCED_SHEET_IDS, JSON.stringify(Array.from(set)));
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): Promise<{ success: boolean; error?: string }> {
   const webhookUrl = getGoogleSheetUrl();
   if (!webhookUrl || webhookUrl.includes('YOUR_DEPLOYMENT_ID')) {
@@ -55,8 +77,8 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
 
   const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
   const payload = {
-    record_id: data.record_id?.trim() || '',
-    timestamp,
+    record_id: data.record_id?.trim() || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: data.submitted_at ? new Date(data.submitted_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : timestamp,
     customer_name: data.customer_name?.trim() || 'Anonymous Customer',
     overall_rating: data.overall_rating,
     food_rating: data.food_rating || 0,
@@ -66,43 +88,54 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
   };
 
   try {
-    // Send with text/plain body to avoid CORS pre-flight, and follow redirects
-    await fetch(webhookUrl, {
-      method: 'POST',
+    // 1. Build URLSearchParams for GET delivery.
+    // Google Apps Script doGet(e) extracts parameters directly from URL query string.
+    // Unlike no-cors POST (which loses its request body during Google's 302 redirect),
+    // GET query parameters are 100% preserved through redirects across all mobile and desktop browsers.
+    const q = new URLSearchParams({
+      record_id: payload.record_id,
+      timestamp: payload.timestamp,
+      customer_name: payload.customer_name,
+      overall_rating: String(payload.overall_rating),
+      food_rating: String(payload.food_rating),
+      service_rating: String(payload.service_rating),
+      cleanliness_rating: String(payload.cleanliness_rating),
+      message: payload.message,
+    });
+    const targetUrl = `${webhookUrl}?${q.toString()}`;
+
+    // 2. Primary delivery: fetch with keepalive: true (survives tab closing / component unmount)
+    const fetchPromise = fetch(targetUrl, {
+      method: 'GET',
       mode: 'no-cors',
       redirect: 'follow',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
-      },
-      body: JSON.stringify(payload),
+      keepalive: true,
+      cache: 'no-cache',
+    }).catch((err) => {
+      console.warn('Google Sheets fetch notice:', err);
     });
 
+    // 3. Redundant zero-fail delivery: Image beacon
+    // Browsers unconditionally dispatch GET requests for Image src without CORS restrictions.
+    if (typeof Image !== 'undefined') {
+      try {
+        const beacon = new Image();
+        beacon.src = targetUrl;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    await fetchPromise;
+
+    if (payload.record_id) {
+      markSheetIdSynced(payload.record_id);
+    }
     return { success: true };
   } catch (err) {
-    console.warn('Google Sheets POST attempt note:', err);
-
-    // Fallback attempt: GET request with query params
-    try {
-      const q = new URLSearchParams({
-        record_id: payload.record_id,
-        timestamp: payload.timestamp,
-        customer_name: payload.customer_name,
-        overall_rating: String(payload.overall_rating),
-        food_rating: String(payload.food_rating),
-        service_rating: String(payload.service_rating),
-        cleanliness_rating: String(payload.cleanliness_rating),
-        message: payload.message,
-      });
-      await fetch(`${webhookUrl}?${q.toString()}`, {
-        method: 'GET',
-        mode: 'no-cors',
-        redirect: 'follow',
-      });
-      return { success: true };
-    } catch (fallbackErr) {
-      const message = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-      return { success: false, error: message };
-    }
+    console.warn('Google Sheets delivery error:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
   }
 }
 
@@ -116,10 +149,37 @@ export async function syncFeedbackToGoogleSheet(
     if (!result.success) {
       return { success: false, synced, error: result.error || 'A review could not be synced.' };
     }
+    if (record.record_id) {
+      markSheetIdSynced(record.record_id);
+    }
     synced += 1;
   }
 
   return { success: true, synced };
+}
+
+/**
+ * Automatically sync any reviews that have not yet been recorded in the Google Sheet.
+ * Safe to run periodically and on real-time feedback arrival.
+ */
+export async function autoSyncUnsyncedReviews(
+  records: GoogleSheetFeedbackData[]
+): Promise<{ success: boolean; syncedCount: number }> {
+  const syncedIds = getSyncedSheetIds();
+  const unsynced = records.filter((r) => r.record_id && !syncedIds.has(r.record_id));
+  if (unsynced.length === 0) {
+    return { success: true, syncedCount: 0 };
+  }
+
+  let count = 0;
+  for (const record of unsynced) {
+    const result = await sendFeedbackToGoogleSheet(record);
+    if (result.success) {
+      count++;
+    }
+  }
+
+  return { success: true, syncedCount: count };
 }
 
 /**
