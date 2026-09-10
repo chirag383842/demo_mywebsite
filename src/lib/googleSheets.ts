@@ -2,7 +2,7 @@
 
 const GOOGLE_SHEET_URL_KEY = 'pk_google_sheet_webhook_url_v2';
 export const DEFAULT_GOOGLE_SHEET_URL =
-  'https://script.google.com/macros/s/AKfycbz5zCx7LpPkyFquwWkTpgPWyeS18u7xQW1wTclGRi_veOtrqnWtfvM35OqhSGgwlljWFg/exec';
+  'https://script.google.com/macros/s/AKfycbxlFDug61sLPfECYq9kAzyxRQHzPG2ecEA-jZaxJ-h9-hJBYWtGzncF7WFaviKMjA0Vdg/exec';
 
 export function getGoogleSheetUrl(): string {
   // 1. Highest priority: User customized webhook URL in Admin portal

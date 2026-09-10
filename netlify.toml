@@ -2,6 +2,11 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  VITE_SUPABASE_URL = "https://xrvdohzqdzcunqshgqoz.supabase.co"
+  VITE_SUPABASE_ANON_KEY = "sb_publishable_sEIK_e4-z4BREXo2iCLznQ_HhwDfTkx"
+  VITE_GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxlFDug61sLPfECYq9kAzyxRQHzPG2ecEA-jZaxJ-h9-hJBYWtGzncF7WFaviKMjA0Vdg/exec"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

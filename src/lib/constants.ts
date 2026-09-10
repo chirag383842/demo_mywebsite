@@ -145,7 +145,11 @@ export function calculateStoreStatus(status?: StoreStatus | null): {
 
   // 2. Author Close Shop for Today / Immediate Close override applies only on its stored IST date.
   // Next day at midnight IST, this automatically expires and regular schedule takes over.
-  const isClosedToday = status?.closed_for_date === ist.dateString;
+  const isClosedToday =
+    status?.closed_for_date === ist.dateString ||
+    status?.override_mode === 'force_close' ||
+    (status?.is_open === false && status?.force_open_date !== ist.dateString);
+
   if (isClosedToday) {
     return {
       isOpen: false,

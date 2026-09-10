@@ -1066,7 +1066,7 @@ export default function Admin({ onNavigate }: Props) {
   // RENDER: AUTHOR CONTROL PANEL
   // ----------------------------------------------------
   const istDate = getISTDate();
-  const isClosedForToday = storeStatus?.closed_for_date === istDate.dateString;
+  const isClosedForToday = storeComputed.isClosedForToday;
 
   // Folder helper list for gallery (Exactly 4 folders)
   const folderCategories = [
