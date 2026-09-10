@@ -5,7 +5,7 @@ export const BRAND = {
   tagline: 'Fresh • Famous • Full of Taste',
   description:
     'Serving delicious Kachori (Regular, Jain & Swaminarayan) and Bhel loved by our customers for years. A trusted local food destination, famous for taste and freshness.',
-  address: 'Paras Kachoriwala — tap the map pin for the exact location',
+  address: 'Shopping Center, Madhuvan Park, Harni Rd, Sangam Char Rasta, Vijay Nagar, Bapunagar, Vadodara, Gujarat 390006',
   mapsLink: 'https://maps.app.goo.gl/CToVpdk32QaesD3J7',
   mapsEmbed: 'https://maps.app.goo.gl/CToVpdk32QaesD3J7',
   phone: '',
