@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from './supabase';
 import type { Product, StoreStatus, Review, Feedback, GalleryImage } from './types';
 import { DEFAULT_GALLERY_IMAGES } from './galleryData';
-import { sendFeedbackToGoogleSheet, autoSyncUnsyncedReviews } from './googleSheets';
+import { sendFeedbackToGoogleSheet } from './googleSheets';
 import { calculateStoreStatus } from './constants';
 import { withDedupe, invalidateCache } from './requestCache';
 import { idbGet, idbSet, idbDelete } from './mediaStorage';

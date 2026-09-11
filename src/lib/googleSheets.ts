@@ -70,6 +70,7 @@ export function markSheetIdSynced(id: string): void {
 }
 
 const inFlightOrSynced = new Set<string>();
+const recentFingerprints = new Map<string, number>();
 
 export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): Promise<{ success: boolean; error?: string }> {
   const webhookUrl = getGoogleSheetUrl();
@@ -83,7 +84,6 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
   if (inFlightOrSynced.has(recordId)) {
     return { success: true };
   }
-  inFlightOrSynced.add(recordId);
 
   const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
   const payload = {
@@ -96,6 +96,26 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
     cleanliness_rating: data.cleanliness_rating || 0,
     message: data.message?.trim() || '',
   };
+
+  // Content fingerprint deduplication: prevent the exact same feedback from being posted multiple times
+  const fingerprint = [
+    payload.customer_name.toLowerCase(),
+    payload.overall_rating,
+    payload.food_rating,
+    payload.service_rating,
+    payload.cleanliness_rating,
+    payload.message.toLowerCase(),
+  ].join(':::');
+
+  const now = Date.now();
+  const lastTime = recentFingerprints.get(fingerprint);
+  if (lastTime && now - lastTime < 60_000) {
+    // Exactly identical review was already sent to Google Sheets within the last 60 seconds
+    return { success: true };
+  }
+
+  inFlightOrSynced.add(recordId);
+  recentFingerprints.set(fingerprint, now);
 
   try {
     const q = new URLSearchParams({

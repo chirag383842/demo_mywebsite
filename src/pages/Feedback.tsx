@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { CheckCircle2, Loader2, Send, AlertCircle } from 'lucide-react';
 import StarRating from '@/components/StarRating';
 import { submitFeedback, type FeedbackPayload } from '@/lib/hooks';
@@ -19,6 +19,7 @@ export default function Feedback() {
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [touched, setTouched] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   const overallValid = ratings.overall >= 1;
   const messageValid = message.trim().length >= 5;
@@ -26,11 +27,15 @@ export default function Feedback() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current || status === 'submitting') return;
+
     setTouched(true);
     if (!formValid) return;
 
+    isSubmittingRef.current = true;
     setStatus('submitting');
     setErrorMsg('');
+
     const payload: FeedbackPayload = {
       overall_rating: ratings.overall,
       food_rating: ratings.food || 0,
@@ -39,16 +44,24 @@ export default function Feedback() {
       message: message.trim(),
       customer_name: name.trim(),
     };
-    const result = await submitFeedback(payload);
-    if (result.success) {
-      setStatus('success');
-      setRatings({ overall: 0, food: 0, service: 0, cleanliness: 0 });
-      setMessage('');
-      setName('');
-      setTouched(false);
-    } else {
+
+    try {
+      const result = await submitFeedback(payload);
+      if (result.success) {
+        setStatus('success');
+        setRatings({ overall: 0, food: 0, service: 0, cleanliness: 0 });
+        setMessage('');
+        setName('');
+        setTouched(false);
+      } else {
+        setStatus('error');
+        setErrorMsg(result.error ?? 'Something went wrong. Please try again.');
+        isSubmittingRef.current = false;
+      }
+    } catch (err) {
       setStatus('error');
-      setErrorMsg(result.error ?? 'Something went wrong. Please try again.');
+      setErrorMsg('Network error. Please try again.');
+      isSubmittingRef.current = false;
     }
   };
 
@@ -152,7 +165,7 @@ export default function Feedback() {
 
           <button
             type="submit"
-            disabled={status === 'submitting'}
+            disabled={status === 'submitting' || isSubmittingRef.current}
             className="btn-primary w-full sm:w-auto disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {status === 'submitting' ? (

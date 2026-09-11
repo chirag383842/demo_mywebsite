@@ -60,7 +60,6 @@ import {
   getGoogleSheetUrl,
   setGoogleSheetUrl,
   syncFeedbackToGoogleSheet,
-  autoSyncUnsyncedReviews,
   testGoogleSheetWebhook,
 } from '@/lib/googleSheets';
 import { CROWD_META, type CrowdLevel, formatTime, getISTDate, isWithinScheduleHours } from '@/lib/constants';
