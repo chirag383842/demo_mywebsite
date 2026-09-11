@@ -1026,20 +1026,6 @@ export function useFeedbackList() {
 
       saveLocalFeedbackList(list);
       setState({ data: list, loading: false, error: null });
-
-      // Automatically store any unsynced reviews into Google Sheet in real time
-      void autoSyncUnsyncedReviews(
-        list.map((f) => ({
-          record_id: f.id,
-          customer_name: f.customer_name ?? undefined,
-          overall_rating: f.overall_rating,
-          food_rating: f.food_rating ?? undefined,
-          service_rating: f.service_rating ?? undefined,
-          cleanliness_rating: f.cleanliness_rating ?? undefined,
-          message: f.message ?? undefined,
-          submitted_at: f.created_at,
-        }))
-      );
     } catch (err) {
       const localData = getLocalFeedbackList();
       const deletedIds = getDeletedReviewIds();

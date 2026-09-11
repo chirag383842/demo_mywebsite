@@ -170,24 +170,6 @@ export default function Admin({ onNavigate }: Props) {
     }
   }, [user]);
 
-  // Real-time auto-sync reviews to Google Sheet whenever reviews load or update
-  useEffect(() => {
-    if (feedbackList && feedbackList.length > 0) {
-      autoSyncUnsyncedReviews(
-        feedbackList.map((f) => ({
-          record_id: f.id,
-          customer_name: f.customer_name ?? undefined,
-          overall_rating: f.overall_rating,
-          food_rating: f.food_rating ?? undefined,
-          service_rating: f.service_rating ?? undefined,
-          cleanliness_rating: f.cleanliness_rating ?? undefined,
-          message: f.message ?? undefined,
-          submitted_at: f.created_at,
-        }))
-      ).catch(() => {});
-    }
-  }, [feedbackList]);
-
   // Sync products form state
   useEffect(() => {
     if (products && products.length > 0) {

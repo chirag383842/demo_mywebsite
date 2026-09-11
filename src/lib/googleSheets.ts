@@ -69,15 +69,25 @@ export function markSheetIdSynced(id: string): void {
   }
 }
 
+const inFlightOrSynced = new Set<string>();
+
 export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): Promise<{ success: boolean; error?: string }> {
   const webhookUrl = getGoogleSheetUrl();
   if (!webhookUrl || webhookUrl.includes('YOUR_DEPLOYMENT_ID')) {
     return { success: true };
   }
 
+  const recordId = data.record_id?.trim() || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  
+  // Prevent duplicate concurrent / repeated submissions for the same record ID
+  if (inFlightOrSynced.has(recordId)) {
+    return { success: true };
+  }
+  inFlightOrSynced.add(recordId);
+
   const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
   const payload = {
-    record_id: data.record_id?.trim() || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    record_id: recordId,
     timestamp: data.submitted_at ? new Date(data.submitted_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : timestamp,
     customer_name: data.customer_name?.trim() || 'Anonymous Customer',
     overall_rating: data.overall_rating,
@@ -88,10 +98,6 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
   };
 
   try {
-    // 1. Build URLSearchParams for GET delivery.
-    // Google Apps Script doGet(e) extracts parameters directly from URL query string.
-    // Unlike no-cors POST (which loses its request body during Google's 302 redirect),
-    // GET query parameters are 100% preserved through redirects across all mobile and desktop browsers.
     const q = new URLSearchParams({
       record_id: payload.record_id,
       timestamp: payload.timestamp,
@@ -104,35 +110,28 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
     });
     const targetUrl = `${webhookUrl}?${q.toString()}`;
 
-    // 2. Primary delivery: fetch with keepalive: true (survives tab closing / component unmount)
-    const fetchPromise = fetch(targetUrl, {
-      method: 'GET',
-      mode: 'no-cors',
-      redirect: 'follow',
-      keepalive: true,
-      cache: 'no-cache',
-    }).catch((err) => {
-      console.warn('Google Sheets fetch notice:', err);
-    });
-
-    // 3. Redundant zero-fail delivery: Image beacon
-    // Browsers unconditionally dispatch GET requests for Image src without CORS restrictions.
-    if (typeof Image !== 'undefined') {
-      try {
+    // Single reliable delivery: fetch with keepalive: true.
+    // We strictly do NOT fire a parallel Image beacon to avoid creating duplicate entries in the Google Sheet.
+    try {
+      await fetch(targetUrl, {
+        method: 'GET',
+        mode: 'no-cors',
+        redirect: 'follow',
+        keepalive: true,
+        cache: 'no-cache',
+      });
+    } catch {
+      // Fallback only if fetch fails in the browser
+      if (typeof Image !== 'undefined') {
         const beacon = new Image();
         beacon.src = targetUrl;
-      } catch {
-        /* ignore */
       }
     }
 
-    await fetchPromise;
-
-    if (payload.record_id) {
-      markSheetIdSynced(payload.record_id);
-    }
+    markSheetIdSynced(payload.record_id);
     return { success: true };
   } catch (err) {
+    inFlightOrSynced.delete(recordId);
     console.warn('Google Sheets delivery error:', err);
     const message = err instanceof Error ? err.message : String(err);
     return { success: false, error: message };
