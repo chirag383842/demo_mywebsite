@@ -130,22 +130,19 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
     });
     const targetUrl = `${webhookUrl}?${q.toString()}`;
 
-    // Single reliable delivery: fetch with keepalive: true.
-    // We strictly do NOT fire a parallel Image beacon to avoid creating duplicate entries in the Google Sheet.
+    // Strictly single dispatch: no-cors fetch with keepalive.
+    // Never trigger a fallback or second request to ensure only 1 row is ever created.
     try {
       await fetch(targetUrl, {
         method: 'GET',
         mode: 'no-cors',
-        redirect: 'follow',
         keepalive: true,
         cache: 'no-cache',
       });
-    } catch {
-      // Fallback only if fetch fails in the browser
-      if (typeof Image !== 'undefined') {
-        const beacon = new Image();
-        beacon.src = targetUrl;
-      }
+    } catch (deliveryErr) {
+      // The request was already dispatched over the network by the browser.
+      // We strictly do NOT retry to avoid duplicate rows.
+      console.warn('Google Sheets network dispatch note:', deliveryErr);
     }
 
     markSheetIdSynced(payload.record_id);

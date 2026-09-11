@@ -5,7 +5,7 @@
 [build.environment]
   VITE_SUPABASE_URL = "https://xrvdohzqdzcunqshgqoz.supabase.co"
   VITE_SUPABASE_ANON_KEY = "sb_publishable_sEIK_e4-z4BREXo2iCLznQ_HhwDfTkx"
-  VITE_GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxlFDug61sLPfECYq9kAzyxRQHzPG2ecEA-jZaxJ-h9-hJBYWtGzncF7WFaviKMjA0Vdg/exec"
+  VITE_GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbwLc-t7sDn6b_cJ_ig5j6OLsK9nqtWfZZH-oWOU9O4l1wc3pRau1fu3KFF4-WPcB3ff0Q/exec"
 
 [[redirects]]
   from = "/*"
