@@ -142,8 +142,8 @@ const DEFAULT_STORE_STATUS: StoreStatus = {
 
 const STORAGE_STATUS_KEY = 'pk_local_store_status_v3';
 const STORAGE_PRODUCTS_KEY = 'pk_local_products_v3';
-const STORAGE_GALLERY_KEY = 'pk_gallery_synced_v8';
-const STORAGE_DELETED_GALLERY_KEY = 'pk_deleted_gallery_v8';
+const STORAGE_GALLERY_KEY = 'pk_gallery_synced_v10';
+const STORAGE_DELETED_GALLERY_KEY = 'pk_deleted_gallery_v10';
 const STORAGE_FEEDBACK_KEY = 'pk_all_feedback_records_v3';
 const STORAGE_DELETED_REVIEWS_KEY = 'pk_deleted_review_ids_v3';
 
@@ -155,6 +155,11 @@ const LEGACY_STORAGE_KEYS = [
   'pk_local_gallery_v4',
   'pk_gallery_master_v5',
   'pk_gallery_master_v6',
+  'pk_gallery_synced_v7',
+  'pk_gallery_synced_v8',
+  'pk_deleted_gallery_v8',
+  'pk_gallery_synced_v9',
+  'pk_deleted_gallery_v9',
   'pk_deleted_gallery_ids_v1',
   'pk_deleted_gallery_ids_v2',
   'pk_deleted_gallery_ids_v3',
@@ -176,8 +181,8 @@ if (typeof window !== 'undefined') {
   }
 }
 
-const CACHE_TTL_SHORT = 10_000;
-const CACHE_TTL_MEDIUM = 20_000;
+const CACHE_TTL_SHORT = 4_000;
+const CACHE_TTL_MEDIUM = 8_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 
 // Cross-tab Real-Time Broadcast Channel
@@ -238,9 +243,15 @@ export function normalizeGalleryItem(img: GalleryImage): GalleryImage {
   if ((cat as string) === 'shop' || (cat as string) === 'home' || (cat as string) === 'about') {
     cat = 'stall';
   }
+  let src = img.src || '';
+  if (src.startsWith('./images/')) {
+    src = src.replace('./images/', '/images/');
+  } else if (src.startsWith('images/')) {
+    src = '/' + src;
+  }
   let mediaType = img.media_type;
   if (!mediaType) {
-    const srcLower = (img.src || '').toLowerCase();
+    const srcLower = src.toLowerCase();
     if (srcLower.endsWith('.mp4') || srcLower.endsWith('.webm') || srcLower.startsWith('data:video/')) {
       mediaType = 'video';
     } else if (
@@ -259,14 +270,14 @@ export function normalizeGalleryItem(img: GalleryImage): GalleryImage {
       cat = 'videos';
     }
   }
-  return { ...img, category: cat, media_type: mediaType };
+  return { ...img, src, category: cat, media_type: mediaType };
 }
 
 function getLocalGallery(): GalleryImage[] | null {
-  if (memoryGallery && memoryGallery.length > 0) return memoryGallery;
+  if (memoryGallery !== null) return memoryGallery;
   try {
     const raw = localStorage.getItem(STORAGE_GALLERY_KEY);
-    if (raw) {
+    if (raw !== null) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         memoryGallery = parsed.map(normalizeGalleryItem);
@@ -717,14 +728,13 @@ export function useGallery() {
 
           if (!error && Array.isArray(data)) {
             remoteLoadedRef.current = true;
-            const remoteFormatted = (data as GalleryImage[])
-              .map(normalizeGalleryItem)
-              .filter((img) => !deleted.has(img.id));
+            const remoteFormatted = (data as GalleryImage[]).map(normalizeGalleryItem);
 
             // Supabase is the true global source of truth across all customer devices and admin
             memoryGallery = remoteFormatted;
             try {
               localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify(remoteFormatted));
+              localStorage.removeItem(STORAGE_DELETED_GALLERY_KEY);
             } catch {
               /* ignore */
             }
@@ -737,7 +747,7 @@ export function useGallery() {
           );
           return currentLocal;
         },
-        CACHE_TTL_MEDIUM
+        CACHE_TTL_SHORT
       );
       setState({ data: result, loading: false, error: null });
     } catch (err) {
@@ -1688,6 +1698,34 @@ export async function deleteGalleryImage(id: string): Promise<{ success: boolean
     }
   } catch (err) {
     console.warn('Gallery delete notice:', err);
+  }
+
+  return { success: true };
+}
+
+export async function clearAllGalleryImages(): Promise<{ success: boolean; error?: string }> {
+  memoryGallery = [];
+  try {
+    localStorage.setItem(STORAGE_GALLERY_KEY, JSON.stringify([]));
+    localStorage.removeItem(STORAGE_DELETED_GALLERY_KEY);
+  } catch {
+    /* ignore */
+  }
+  await idbSet(STORAGE_GALLERY_KEY, []);
+
+  invalidateCache('sb:gallery');
+  broadcastRealtimeEvent('GALLERY_CHANGED');
+  window.dispatchEvent(new Event('pk_gallery_changed'));
+
+  try {
+    const { data: rows } = await withTimeout(() => supabase.from('gallery').select('id'), 10000);
+    if (rows && rows.length > 0) {
+      for (const r of rows) {
+        await withTimeout(() => supabase.from('gallery').delete().eq('id', r.id), 8000).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.warn('Clear all gallery Supabase notice:', err);
   }
 
   return { success: true };

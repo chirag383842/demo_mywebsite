@@ -10,8 +10,19 @@ export default function Gallery() {
   const { data: galleryImages, loading, error, refetch } = useGallery();
   const [active, setActive] = useState<GalleryCategory>('all');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(new Set());
 
-  const images = galleryImages ?? [];
+  const images = useMemo(() => {
+    const raw = galleryImages ?? [];
+    return raw.filter(
+      (img) =>
+        img &&
+        img.src &&
+        typeof img.src === 'string' &&
+        img.src.trim() !== '' &&
+        !failedMediaIds.has(img.id)
+    );
+  }, [galleryImages, failedMediaIds]);
 
   const filtered = useMemo(() => {
     if (active === 'all') return images;
@@ -151,7 +162,7 @@ export default function Gallery() {
             />
           </div>
         ) : filtered.length > 0 ? (
-          <div className="mt-10 columns-2 md:columns-3 lg:columns-4 gap-3 sm:gap-4 [column-fill:_balance]">
+          <div className="mt-8 sm:mt-10 grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
             {filtered.map((img, i) => {
               const isVideo =
                 img.media_type === 'video' ||
@@ -168,8 +179,8 @@ export default function Gallery() {
                 <button
                   key={img.id}
                   onClick={() => openLightbox(img)}
-                  className="group relative mb-3 sm:mb-4 block w-full overflow-hidden rounded-2xl shadow-card break-inside-avoid animate-scale-in focus:outline-none focus-visible:ring-2 focus-visible:ring-spice-500 cursor-pointer bg-charcoal-900"
-                  style={{ animationDelay: `${i * 0.05}s` }}
+                  className="group relative block w-full overflow-hidden rounded-2xl shadow-card bg-charcoal-900 border border-spice-200/60 hover:border-spice-400 hover:shadow-warm transition-all duration-300 animate-scale-in focus:outline-none focus-visible:ring-2 focus-visible:ring-spice-500 cursor-pointer text-left"
+                  style={{ animationDelay: `${i * 0.04}s` }}
                   aria-label={`Open media: ${img.caption || img.alt}`}
                 >
                   {isVideo ? (
@@ -179,47 +190,49 @@ export default function Gallery() {
                         preload="metadata"
                         muted
                         playsInline
-                        className="w-full h-full object-cover opacity-85 group-hover:scale-105 transition-transform duration-700"
+                        onError={() => setFailedMediaIds((prev) => new Set(prev).add(img.id))}
+                        className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-700"
                       />
                       <div className="absolute inset-0 bg-charcoal-950/30 group-hover:bg-charcoal-950/10 transition-colors flex items-center justify-center">
-                        <div className="h-12 w-12 rounded-full bg-spice-600/90 text-white shadow-xl flex items-center justify-center transform group-hover:scale-110 transition-transform">
-                          <Play size={22} fill="white" className="ml-0.5" />
+                        <div className="h-11 w-11 sm:h-12 sm:w-12 rounded-full bg-spice-600/90 text-white shadow-xl flex items-center justify-center transform group-hover:scale-110 transition-transform">
+                          <Play size={20} fill="white" className="ml-0.5" />
                         </div>
                       </div>
                       <span className="absolute top-2 right-2 rounded-full bg-charcoal-950/80 backdrop-blur-sm text-marigold-300 text-[10px] font-bold px-2 py-0.5 border border-white/20 flex items-center gap-1">
-                        <Video size={11} /> MP4 Video
+                        <Video size={11} /> Video
                       </span>
                     </div>
                   ) : isAudio ? (
-                    <div className="aspect-[4/3] w-full bg-gradient-to-br from-spice-900 to-charcoal-950 flex flex-col items-center justify-center p-6 text-center">
-                      <div className="h-14 w-14 rounded-2xl bg-spice-600/30 border border-spice-400/30 text-spice-300 grid place-items-center mb-3">
-                        <Music size={28} />
+                    <div className="aspect-[4/3] w-full bg-gradient-to-br from-spice-900 to-charcoal-950 flex flex-col items-center justify-center p-4 sm:p-6 text-center">
+                      <div className="h-12 w-12 sm:h-14 sm:w-14 rounded-2xl bg-spice-600/30 border border-spice-400/30 text-spice-300 grid place-items-center mb-2 sm:mb-3">
+                        <Music size={24} className="sm:w-7 sm:h-7" />
                       </div>
-                      <p className="font-display text-sm font-bold text-white truncate max-w-full">
+                      <p className="font-display text-xs sm:text-sm font-bold text-white truncate max-w-full">
                         {img.caption || 'Audio Recording'}
                       </p>
-                      <span className="mt-2 text-[10px] uppercase font-bold text-spice-300 bg-white/10 px-2.5 py-0.5 rounded-full border border-white/10">
-                        🎵 MP3 Audio
+                      <span className="mt-1.5 text-[9px] sm:text-[10px] uppercase font-bold text-spice-300 bg-white/10 px-2 py-0.5 rounded-full border border-white/10">
+                        🎵 Audio Clip
                       </span>
                     </div>
                   ) : (
-                    <div className="relative overflow-hidden">
+                    <div className="relative overflow-hidden aspect-[4/3] bg-charcoal-900">
                       <img
                         src={img.src}
                         alt={img.alt}
                         loading="lazy"
                         decoding="async"
-                        className="w-full object-cover transition-transform duration-700 group-hover:scale-105"
+                        onError={() => setFailedMediaIds((prev) => new Set(prev).add(img.id))}
+                        className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
                       />
                     </div>
                   )}
 
-                  <div className="absolute inset-0 bg-gradient-to-t from-charcoal-950/85 via-charcoal-950/20 to-transparent opacity-80 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity" />
-                  <div className="absolute bottom-2.5 left-2.5 right-2.5 sm:bottom-3 sm:left-3 sm:right-3 text-left opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                    <span className="text-[10px] sm:text-[11px] font-bold text-marigold-300 uppercase tracking-wider block">
+                  <div className="absolute inset-0 bg-gradient-to-t from-charcoal-950/90 via-charcoal-950/30 to-transparent opacity-85 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute bottom-2 left-2 right-2 sm:bottom-3 sm:left-3 sm:right-3 text-left opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                    <span className="text-[9px] sm:text-[11px] font-bold text-marigold-300 uppercase tracking-wider block">
                       {getCategoryLabel(img.category)}
                     </span>
-                    <span className="text-xs sm:text-sm font-semibold text-white block mt-0.5 truncate">
+                    <span className="text-xs sm:text-sm font-bold text-white block mt-0.5 truncate">
                       {img.caption || img.alt}
                     </span>
                   </div>
@@ -228,14 +241,29 @@ export default function Gallery() {
             })}
           </div>
         ) : (
-          <div className="mt-12 card p-12 text-center max-w-md mx-auto animate-fade-up">
-            <Sparkles size={36} className="mx-auto text-spice-300 mb-3" />
+          <div className="mt-12 card p-8 sm:p-12 text-center max-w-md mx-auto animate-fade-up">
+            <div className="mx-auto w-14 h-14 rounded-2xl bg-spice-100 text-spice-600 flex items-center justify-center mb-4">
+              <Sparkles size={28} />
+            </div>
             <h3 className="text-charcoal-900 font-display text-xl font-bold">
-              No Items in {GALLERY_CATEGORIES.find((c) => c.id === active)?.label || 'this Section'}
+              {active === 'all'
+                ? 'Gallery is Ready for New Photos'
+                : `No Items in ${GALLERY_CATEGORIES.find((c) => c.id === active)?.label || 'this Folder'}`}
             </h3>
             <p className="text-charcoal-600 text-sm mt-2 leading-relaxed">
-              You can upload and assign photos or videos to this section from the Author Panel.
+              {active === 'all'
+                ? 'No photos or videos uploaded yet. Upload new moments from the Author Panel to showcase them here!'
+                : 'You can upload photos or videos to this folder from the Author Panel.'}
             </p>
+            {active !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setActive('all')}
+                className="mt-5 inline-flex items-center gap-1.5 btn-primary text-xs py-2 px-4 shadow-sm cursor-pointer"
+              >
+                View All Media
+              </button>
+            )}
           </div>
         )}
       </section>

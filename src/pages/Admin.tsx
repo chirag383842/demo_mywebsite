@@ -53,6 +53,7 @@ import {
   addGalleryImage,
   updateGalleryImage,
   deleteGalleryImage,
+  clearAllGalleryImages,
   syncAuthorGalleryToSupabase,
 } from '@/lib/hooks';
 import {
@@ -868,6 +869,22 @@ export default function Admin({ onNavigate }: Props) {
     if (!confirm('Are you sure you want to delete this photo from the website gallery?')) return;
     await deleteGalleryImage(id);
     await syncAuthorGalleryToSupabase();
+    refetchGallery();
+  };
+
+  const handleClearAllGallery = async () => {
+    if (
+      !confirm(
+        '⚠️ Are you sure you want to DELETE ALL images and videos from the gallery?\n\nThis will completely reset the gallery to a clean slate across all customer devices.'
+      )
+    )
+      return;
+    setSyncingGallery(true);
+    setGallerySyncMsg('');
+    await clearAllGalleryImages();
+    setSyncingGallery(false);
+    setGallerySyncMsg('All gallery items deleted successfully. Gallery is now a clean slate!');
+    setTimeout(() => setGallerySyncMsg(''), 5000);
     refetchGallery();
   };
 
@@ -2087,7 +2104,7 @@ export default function Admin({ onNavigate }: Props) {
                     1. Select Destination Folder (4 Folders):
                   </label>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
                     {folderCategories.map((folder) => {
                       const isSelected = uploadCategory === folder.id;
                       return (
@@ -2095,7 +2112,7 @@ export default function Admin({ onNavigate }: Props) {
                           key={folder.id}
                           type="button"
                           onClick={() => setUploadCategory(folder.id)}
-                          className={`p-3.5 rounded-2xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
+                          className={`p-3 rounded-2xl border text-left flex items-start gap-2.5 sm:gap-3 transition-all cursor-pointer ${
                             isSelected
                               ? 'border-spice-600 bg-white ring-2 ring-spice-500 shadow-md'
                               : 'border-spice-200 bg-white/70 hover:bg-white hover:border-spice-300'
@@ -2110,12 +2127,12 @@ export default function Admin({ onNavigate }: Props) {
                           </span>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between">
-                              <p className={`text-xs font-bold ${isSelected ? 'text-spice-800' : 'text-charcoal-900'}`}>
+                              <p className={`text-xs font-bold truncate ${isSelected ? 'text-spice-800' : 'text-charcoal-900'}`}>
                                 {folder.label}
                               </p>
                               {isSelected && <Check size={14} className="text-spice-600 shrink-0 ml-1" />}
                             </div>
-                            <p className="text-[11px] text-charcoal-500 mt-0.5">{folder.desc}</p>
+                            <p className="text-[10px] sm:text-[11px] text-charcoal-500 mt-0.5 line-clamp-1 sm:line-clamp-2">{folder.desc}</p>
                           </div>
                         </button>
                       );
@@ -2240,7 +2257,7 @@ export default function Admin({ onNavigate }: Props) {
                   </select>
                 </div>
 
-                <div className="flex items-center gap-2 self-start sm:self-auto">
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
                   <button
                     onClick={handleSyncGalleryToCloud}
                     disabled={syncingGallery}
@@ -2248,7 +2265,7 @@ export default function Admin({ onNavigate }: Props) {
                     title="Publish all author media so every customer phone and device shows the exact same gallery"
                   >
                     <RefreshCw size={13} className={syncingGallery ? 'animate-spin' : ''} />
-                    {syncingGallery ? 'Syncing All Devices...' : 'Sync All Devices'}
+                    {syncingGallery ? 'Syncing...' : 'Sync All Devices'}
                   </button>
                   <button
                     onClick={refetchGallery}
@@ -2257,6 +2274,17 @@ export default function Admin({ onNavigate }: Props) {
                     <RefreshCw size={13} className={loadingGallery ? 'animate-spin' : ''} />
                     Refresh
                   </button>
+                  {(galleryImages?.length ?? 0) > 0 && (
+                    <button
+                      onClick={handleClearAllGallery}
+                      disabled={syncingGallery}
+                      className="px-3 py-2 text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 border border-red-200 rounded-xl flex items-center gap-1.5 cursor-pointer transition-colors"
+                      title="Delete all media from gallery to start fresh"
+                    >
+                      <Trash2 size={13} />
+                      Clear All
+                    </button>
+                  )}
                 </div>
               </div>
 
