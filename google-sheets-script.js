@@ -43,6 +43,7 @@ function ensureHeaders(sheet) {
   if (sheet.getLastRow() === 0) {
     sheet.appendRow([
       "Timestamp",
+      "Record ID",
       "Customer Name",
       "Overall Rating",
       "Food Rating",
@@ -50,7 +51,7 @@ function ensureHeaders(sheet) {
       "Cleanliness Rating",
       "Feedback Message"
     ]);
-    var headerRange = sheet.getRange(1, 1, 1, 7);
+    var headerRange = sheet.getRange(1, 1, 1, 8);
     headerRange.setFontWeight("bold");
     headerRange.setBackground("#9c4c18");
     headerRange.setFontColor("#ffffff");
@@ -142,7 +143,7 @@ function recordFeedback(data) {
           rowMessage = String(row[6] || "").trim();
         }
 
-        // Duplicate condition 1: Matching Record ID
+        // Duplicate condition 1: Exact matching non-empty Record ID
         if (recordId && rowRecordId && recordId === rowRecordId) {
           return {
             status: "duplicate",
@@ -151,17 +152,35 @@ function recordFeedback(data) {
           };
         }
 
-        // Duplicate condition 2: Same Customer Name and identical Message
+        // Duplicate condition 2: Immediate duplicate entry (same name & message received within seconds)
+        // This prevents network double-dispatch / rapid double-clicks on the SAME entry,
+        // while allowing a new entry after waiting for the second data.
         if (
           customerName.toLowerCase() === rowCustomerName.toLowerCase() &&
           message.toLowerCase() === rowMessage.toLowerCase() &&
           message.length > 0
         ) {
-          return {
-            status: "duplicate",
-            message: "Duplicate review skipped (same name and message)",
-            sheet: sheet.getName()
-          };
+          var rowTimestamp = String(row[0] || "").trim();
+          var isImmediateDuplicate = false;
+
+          if (rowTimestamp && timestamp && rowTimestamp === timestamp) {
+            isImmediateDuplicate = true;
+          } else if (i === existingData.length - 1) {
+            // Immediately previous row: check time delta if parseable
+            var prevTime = new Date(rowTimestamp).getTime();
+            var currTime = new Date(timestamp).getTime();
+            if (!isNaN(prevTime) && !isNaN(currTime) && Math.abs(currTime - prevTime) < 15000) {
+              isImmediateDuplicate = true;
+            }
+          }
+
+          if (isImmediateDuplicate) {
+            return {
+              status: "duplicate",
+              message: "Duplicate review skipped (rapid repeated entry)",
+              sheet: sheet.getName()
+            };
+          }
         }
       }
     }

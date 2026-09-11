@@ -127,28 +127,13 @@ export function calculateStoreStatus(status?: StoreStatus | null): {
   const istAmPm = ist.hour >= 12 ? 'PM' : 'AM';
   const istTimeStr = `${istHour12}:${String(ist.minute).padStart(2, '0')} ${istAmPm} IST`;
 
-  // 1. Author OPEN NOW / Early Opening override applies only on its stored IST date.
-  // Next day at midnight IST, this automatically expires and regular schedule takes over.
-  const isForcedOpenToday = status?.force_open_date === ist.dateString && status?.is_open === true;
-  if (isForcedOpenToday) {
-    return {
-      isOpen: true,
-      isClosedForToday: false,
-      isForcedOpen: true,
-      isAutoScheduled: false,
-      nextOpenText: inScheduleHours ? 'Open Now (7:30 PM – 12:00 AM)' : 'Open Now (Early Opening by Owner)',
-      todayScheduleDisplay: todaySchedule.display,
-      statusLabel: inScheduleHours ? 'Open Now' : 'Open Now (Early Opening)',
-      currentISTTimeDisplay: istTimeStr,
-    };
-  }
-
-  // 2. Author Close Shop for Today / Immediate Close override applies only on its stored IST date.
+  // 1. Author Close Shop for Today:
+  // Strictly applies when marked closed for today's IST date or override_mode is closed_today / force_close.
   // Next day at midnight IST, this automatically expires and regular schedule takes over.
   const isClosedToday =
     status?.closed_for_date === ist.dateString ||
-    status?.override_mode === 'force_close' ||
-    (status?.is_open === false && status?.force_open_date !== ist.dateString);
+    status?.override_mode === 'closed_today' ||
+    status?.override_mode === 'force_close';
 
   if (isClosedToday) {
     return {
@@ -163,8 +148,55 @@ export function calculateStoreStatus(status?: StoreStatus | null): {
     };
   }
 
-  // 3. Regular Real-Time Automatic Schedule (7:30 PM to 12:00 AM Midnight IST)
-  // Closed during all remaining hours (12:00 AM to 7:30 PM IST)
+  // 2. Author OPEN NOW / Early Opening override applies on its stored IST date or mode force_open.
+  // Next day at midnight IST, this automatically expires and regular schedule takes over.
+  const isForcedOpenToday =
+    (status?.force_open_date === ist.dateString && status?.is_open === true) ||
+    status?.override_mode === 'force_open';
+
+  if (isForcedOpenToday) {
+    return {
+      isOpen: true,
+      isClosedForToday: false,
+      isForcedOpen: true,
+      isAutoScheduled: false,
+      nextOpenText: inScheduleHours ? 'Open Now (7:30 PM – 12:00 AM)' : 'Open Now (Early Opening by Owner)',
+      todayScheduleDisplay: todaySchedule.display,
+      statusLabel: inScheduleHours ? 'Open Now' : 'Open Now (Early Opening)',
+      currentISTTimeDisplay: istTimeStr,
+    };
+  }
+
+  // 3. Author Direct CLOSED status (either via is_open: false or closed_now override)
+  // When owner shuts the stall, customer devices must ALWAYS display "Currently Closed" regardless of clock time.
+  if (status && (status.is_open === false || status.override_mode === 'closed_now')) {
+    return {
+      isOpen: false,
+      isClosedForToday: false,
+      isForcedOpen: false,
+      isAutoScheduled: false,
+      nextOpenText: inScheduleHours ? 'Currently Closed by Owner' : nextText,
+      todayScheduleDisplay: todaySchedule.display,
+      statusLabel: 'Currently Closed',
+      currentISTTimeDisplay: istTimeStr,
+    };
+  }
+
+  // 4. Author Direct OPEN status
+  if (status && status.is_open === true) {
+    return {
+      isOpen: true,
+      isClosedForToday: false,
+      isForcedOpen: !inScheduleHours,
+      isAutoScheduled: inScheduleHours,
+      nextOpenText: inScheduleHours ? 'Open Now (7:30 PM – 12:00 AM)' : 'Open Now (Early Opening by Owner)',
+      todayScheduleDisplay: todaySchedule.display,
+      statusLabel: inScheduleHours ? 'Open Now' : 'Open Now (Early Opening)',
+      currentISTTimeDisplay: istTimeStr,
+    };
+  }
+
+  // 5. Fallback for unconfigured/offline: Automatic Schedule (7:30 PM to 12:00 AM Midnight IST)
   return {
     isOpen: inScheduleHours,
     isClosedForToday: false,

@@ -105,6 +105,7 @@ export default function Admin({ onNavigate }: Props) {
   const [productImageUploading, setProductImageUploading] = useState<Record<string, boolean>>({});
   const [targetProductForPhoto, setTargetProductForPhoto] = useState<Product | null>(null);
   const productPhotoInputRef = useRef<HTMLInputElement>(null);
+  const [activeEditingSlug, setActiveEditingSlug] = useState<string | null>(null);
 
   // Add Menu Item state
   const [showAddMenuModal, setShowAddMenuModal] = useState(false);
@@ -169,18 +170,22 @@ export default function Admin({ onNavigate }: Props) {
     }
   }, [user]);
 
-  // Sync products form state
+  // Sync products form state from Supabase
   useEffect(() => {
     if (products && products.length > 0) {
       setProductForms((prev) => {
         const next = { ...prev };
         products.forEach((p) => {
+          const isCurrentlyEditing = activeEditingSlug === p.slug || activeEditingSlug === p.id;
           const existing = prev[p.slug] ?? prev[p.id];
           const entry = {
-            price: existing?.price ?? p.price,
+            price: isCurrentlyEditing && existing?.price !== undefined ? existing.price : p.price,
             available: p.available,
-            stock: existing?.stock ?? p.stock ?? 0,
-            description: existing?.description ?? p.description,
+            stock: isCurrentlyEditing && existing?.stock !== undefined ? existing.stock : (p.stock ?? 0),
+            description:
+              isCurrentlyEditing && existing?.description !== undefined
+                ? existing.description
+                : p.description,
           };
           next[p.slug] = entry;
           next[p.id] = entry;
@@ -188,7 +193,7 @@ export default function Admin({ onNavigate }: Props) {
         return next;
       });
     }
-  }, [products]);
+  }, [products, activeEditingSlug]);
 
   // Check rate limit timer
   useEffect(() => {
@@ -284,7 +289,7 @@ export default function Admin({ onNavigate }: Props) {
   const handleForceCloseNow = async () => {
     if (
       !confirm(
-        'Close the stall immediately for today? The store will be marked CLOSED immediately. The regular daily schedule will resume tomorrow automatically at 7:30 PM IST.'
+        'Close the stall immediately? The store will be marked CLOSED right now. You can click OPEN NOW or Resume Schedule at any time.'
       )
     ) {
       return;
@@ -293,19 +298,18 @@ export default function Admin({ onNavigate }: Props) {
     setStatusMessage('');
     setStatusError('');
 
-    const ist = getISTDate();
     const res = await updateStoreStatus({
       is_open: false,
       crowd_level: crowd,
       force_open_date: null,
-      closed_for_date: ist.dateString,
-      override_mode: 'force_close',
+      closed_for_date: null,
+      override_mode: 'closed_now',
     });
 
     if (res.success) {
       setIsOpen(false);
       setStatusMessage(
-        'Stall is now CLOSED for today! Next day it will automatically follow the daily 7:30 PM – 12:00 AM schedule.'
+        'Stall is now marked CLOSED NOW. Customers will see "Currently Closed".'
       );
       setTimeout(() => setStatusMessage(''), 5000);
     } else {
@@ -333,7 +337,7 @@ export default function Admin({ onNavigate }: Props) {
       crowd_level: 'Low',
       closed_for_date: ist.dateString,
       force_open_date: null,
-      override_mode: 'force_close',
+      override_mode: 'closed_today',
     });
 
     if (res.success) {
@@ -401,7 +405,7 @@ export default function Admin({ onNavigate }: Props) {
   };
 
   // 2. Product Availability Toggle & Save Actions
-  const handleToggleAvailability = (product: Product, newAvailable: boolean) => {
+  const handleToggleAvailability = async (product: Product, newAvailable: boolean) => {
     const currentForm = productForms[product.slug] ?? productForms[product.id] ?? {
       price: product.price,
       available: product.available,
@@ -409,8 +413,10 @@ export default function Admin({ onNavigate }: Props) {
       description: product.description,
     };
 
+    const priceToSave = Number(currentForm.price || product.price);
     const updatedEntry = {
       ...currentForm,
+      price: priceToSave,
       available: newAvailable,
     };
 
@@ -435,17 +441,21 @@ export default function Admin({ onNavigate }: Props) {
       setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
     }, 4000);
 
-    // 3. Immediately save locally, broadcast to user website, and sync in background
-    void updateProduct(
+    // 3. Immediately save locally, broadcast to user website, and sync to Supabase
+    const res = await updateProduct(
       product.id,
       {
         available: newAvailable,
-        price: Number(currentForm.price),
-        stock: Number(currentForm.stock),
+        price: priceToSave,
+        stock: Number(currentForm.stock ?? 0),
         description: currentForm.description,
       },
       product.slug
     );
+
+    if (res.success) {
+      await refetchProducts();
+    }
   };
 
   const handleSaveProduct = async (product: Product) => {
@@ -471,14 +481,21 @@ export default function Admin({ onNavigate }: Props) {
     );
 
     if (res.success) {
+      await refetchProducts();
       setProductMessages((prev) => ({
         ...prev,
-        [product.slug]: `Price & details for ${product.name} updated live!`,
-        [product.id]: `Price & details for ${product.name} updated live!`,
+        [product.slug]: `✓ Price & details for ${product.name} updated live across all devices!`,
+        [product.id]: `✓ Price & details for ${product.name} updated live across all devices!`,
       }));
       setTimeout(() => {
         setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
       }, 3500);
+    } else {
+      setProductMessages((prev) => ({
+        ...prev,
+        [product.slug]: `⚠ Update failed: ${res.error || 'Please try again'}`,
+        [product.id]: `⚠ Update failed: ${res.error || 'Please try again'}`,
+      }));
     }
 
     setProductSaving((prev) => ({ ...prev, [product.slug]: false, [product.id]: false }));
@@ -506,19 +523,16 @@ export default function Admin({ onNavigate }: Props) {
       [product.id]: updatedEntry,
     }));
 
-    // 2. Immediately show confirmation banner
-    const priceMsg = `Live: ${product.name} price updated to ₹${priceToSave}!`;
+    // 2. Show confirmation banner
+    const priceMsg = `Updating ${product.name} price to ₹${priceToSave}...`;
     setProductMessages((prev) => ({
       ...prev,
       [product.slug]: priceMsg,
       [product.id]: priceMsg,
     }));
-    setTimeout(() => {
-      setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
-    }, 3500);
 
     // 3. Immediately broadcast to website & save in background
-    await updateProduct(
+    const res = await updateProduct(
       product.id,
       {
         price: priceToSave,
@@ -528,6 +542,23 @@ export default function Admin({ onNavigate }: Props) {
       },
       product.slug
     );
+
+    if (res.success) {
+      await refetchProducts();
+    }
+
+    const successMsg = res.remoteSync
+      ? `✓ Live: ${product.name} price saved to ₹${priceToSave} & updated across all devices!`
+      : `Live: ${product.name} price updated to ₹${priceToSave}!`;
+
+    setProductMessages((prev) => ({
+      ...prev,
+      [product.slug]: successMsg,
+      [product.id]: successMsg,
+    }));
+    setTimeout(() => {
+      setProductMessages((prev) => ({ ...prev, [product.slug]: '', [product.id]: '' }));
+    }, 3500);
   };
 
   const handleTriggerProductPhotoUpload = (product: Product) => {
@@ -563,6 +594,7 @@ export default function Admin({ onNavigate }: Props) {
       );
 
       if (res.success) {
+        await refetchProducts();
         setProductMessages((prev) => ({
           ...prev,
           [target.slug]: `Photo for ${target.name} updated live across entire website!`,
@@ -613,6 +645,7 @@ export default function Admin({ onNavigate }: Props) {
     );
 
     if (res.success) {
+      await refetchProducts();
       setProductMessages((prev) => ({
         ...prev,
         [product.slug]: `Photo removed for ${product.name}. Default icon will be shown.`,
@@ -1267,7 +1300,8 @@ export default function Admin({ onNavigate }: Props) {
                 </div>
 
               {/* Status Mode Banner */}
-              {storeStatus?.force_open_date === istDate.dateString ? (
+              {/* Status Mode Banner */}
+              {storeComputed.isForcedOpen ? (
                 <div className="p-4 rounded-2xl bg-leaf-50 border border-leaf-200 text-leaf-900 flex items-start gap-3">
                   <CheckCircle2 size={20} className="text-leaf-600 shrink-0 mt-0.5" />
                   <div>
@@ -1290,6 +1324,17 @@ export default function Admin({ onNavigate }: Props) {
                     </p>
                   </div>
                 </div>
+              ) : storeStatus?.override_mode === 'closed_now' ? (
+                <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-red-900 flex items-start gap-3">
+                  <Clock size={20} className="text-red-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-sm">Shop is marked CLOSED NOW by Author</p>
+                    <p className="text-xs text-red-800 mt-0.5">
+                      The stall is closed right now by author override. Customers will see "Currently Closed".
+                      Click &quot;OPEN NOW&quot; or &quot;Resume Normal Schedule&quot; below to restore.
+                    </p>
+                  </div>
+                </div>
               ) : (
                 <div className="p-4 rounded-2xl bg-sky-50/80 border border-sky-200 text-sky-900 flex items-start gap-3">
                   <Clock size={20} className="text-sky-600 shrink-0 mt-0.5" />
@@ -1297,7 +1342,7 @@ export default function Admin({ onNavigate }: Props) {
                     <p className="font-bold text-sm">Automatic Schedule Active (7:30 PM – 12:00 AM IST Daily)</p>
                     <p className="text-xs text-sky-800 mt-0.5">
                       No manual override is active. The stall opens automatically at 7:30 PM and closes at 12:00 AM
-                      midnight. All other hours are automatically marked closed.
+                      midnight. All other hours are automatically marked closed. (Currently {storeComputed.isOpen ? 'OPEN' : 'CLOSED'}).
                     </p>
                   </div>
                 </div>
@@ -1313,7 +1358,7 @@ export default function Admin({ onNavigate }: Props) {
                     type="button"
                     onClick={handleForceOpenNow}
                     disabled={statusSaving}
-                    className={`p-4 rounded-2xl border text-center transition-all flex flex-col items-center justify-center gap-1.5 ${
+                    className={`p-4 rounded-2xl border text-center transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
                       storeComputed.isOpen
                         ? 'border-leaf-600 bg-leaf-50 ring-2 ring-leaf-500/30 text-leaf-900 shadow-md font-bold'
                         : 'border-spice-200 bg-white hover:border-leaf-300 text-charcoal-700 font-medium'
@@ -1324,7 +1369,11 @@ export default function Admin({ onNavigate }: Props) {
                       OPEN NOW
                     </span>
                     <span className="text-[11px] opacity-75">
-                      {storeComputed.isForcedOpen ? 'Opened early / forced open' : 'Stall is active & taking orders'}
+                      {storeComputed.isForcedOpen
+                        ? 'Author Early Opening Active'
+                        : storeComputed.isOpen
+                        ? 'Active & Taking Orders'
+                        : 'Click to open stall early'}
                     </span>
                   </button>
 
@@ -1332,7 +1381,7 @@ export default function Admin({ onNavigate }: Props) {
                     type="button"
                     onClick={handleForceCloseNow}
                     disabled={statusSaving}
-                    className={`p-4 rounded-2xl border text-center transition-all flex flex-col items-center justify-center gap-1.5 ${
+                    className={`p-4 rounded-2xl border text-center transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${
                       !storeComputed.isOpen
                         ? 'border-red-600 bg-red-50 ring-2 ring-red-500/30 text-red-900 shadow-md font-bold'
                         : 'border-spice-200 bg-white hover:border-red-300 text-charcoal-700 font-medium'
@@ -1343,7 +1392,13 @@ export default function Admin({ onNavigate }: Props) {
                       CLOSED NOW
                     </span>
                     <span className="text-[11px] opacity-75">
-                      {isClosedForToday ? 'Closed for today' : 'Stall is currently shut'}
+                      {isClosedForToday
+                        ? 'Closed for Today (Active)'
+                        : storeStatus?.override_mode === 'closed_now'
+                        ? 'Closed Now (Author Override)'
+                        : !storeComputed.isOpen
+                        ? 'Currently Shut (Auto Schedule)'
+                        : 'Click to close immediately'}
                     </span>
                   </button>
                 </div>
@@ -1887,6 +1942,7 @@ export default function Admin({ onNavigate }: Props) {
                               type="number"
                               min={1}
                               value={form.price}
+                              onFocus={() => setActiveEditingSlug(product.slug)}
                               onChange={(e) => {
                                 const newPrice = Number(e.target.value);
                                 setProductForms((prev) => ({
@@ -1895,10 +1951,14 @@ export default function Admin({ onNavigate }: Props) {
                                   [product.id]: { ...form, price: newPrice },
                                 }));
                               }}
-                              onBlur={() => handleQuickPriceSave(product)}
+                              onBlur={() => {
+                                setActiveEditingSlug(null);
+                                handleQuickPriceSave(product);
+                              }}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
+                                  setActiveEditingSlug(null);
                                   handleQuickPriceSave(product);
                                 }
                               }}

@@ -56,11 +56,11 @@ export default function Feedback() {
       } else {
         setStatus('error');
         setErrorMsg(result.error ?? 'Something went wrong. Please try again.');
-        isSubmittingRef.current = false;
       }
     } catch (err) {
       setStatus('error');
       setErrorMsg('Network error. Please try again.');
+    } finally {
       isSubmittingRef.current = false;
     }
   };
@@ -77,7 +77,13 @@ export default function Feedback() {
             <p className="mt-3 text-charcoal-600">
               Your feedback means a lot to us. It is waiting for the owner to feature it on the home page.
             </p>
-            <button onClick={() => setStatus('idle')} className="btn-outline mt-8">
+            <button
+              onClick={() => {
+                isSubmittingRef.current = false;
+                setStatus('idle');
+              }}
+              className="btn-outline mt-8"
+            >
               Share Another Review
             </button>
           </div>

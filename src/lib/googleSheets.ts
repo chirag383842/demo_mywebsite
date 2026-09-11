@@ -97,7 +97,7 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
     message: data.message?.trim() || '',
   };
 
-  // Content fingerprint deduplication: prevent the exact same feedback from being posted multiple times
+  // Content fingerprint deduplication: prevent accidental rapid double-click submissions (within 4s)
   const fingerprint = [
     payload.customer_name.toLowerCase(),
     payload.overall_rating,
@@ -108,9 +108,16 @@ export async function sendFeedbackToGoogleSheet(data: GoogleSheetFeedbackData): 
   ].join(':::');
 
   const now = Date.now();
+  // Clean up fingerprints older than 30 seconds
+  for (const [fp, time] of recentFingerprints.entries()) {
+    if (now - time > 30_000) {
+      recentFingerprints.delete(fp);
+    }
+  }
+
   const lastTime = recentFingerprints.get(fingerprint);
-  if (lastTime && now - lastTime < 60_000) {
-    // Exactly identical review was already sent to Google Sheets within the last 60 seconds
+  if (lastTime && now - lastTime < 4_000) {
+    // Rapid duplicate submission absorbed (e.g. double click)
     return { success: true };
   }
 
